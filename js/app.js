@@ -1296,20 +1296,69 @@ function bindStepper(btn, stepFn) {
      PERMANENT access. The owner NEVER needs a subscription — the bypass
      is by admin/owner status, never by a subscription row (an admin's
      subscription row, if one exists, is irrelevant to their own access).
-   - Everyone else: an active subscription is required to use any tab.
+   - Global free-use window (21-24 Nov 2026): every SIGNED-IN user can
+     use the app free until FREE_UNTIL in js/config.js (24 Nov 2026,
+     23:59 PKT). Logged-out users still have to sign in first.
+   - After the cutoff: an active subscription is required to use any tab.
+     Anyone who creates an account after 24 Nov gets NO free usage — they
+     hit the lock immediately unless they have premium.
    Pure core (appAccessFor) is unit-tested in Node; appAccess() reads the
    live session state. Returns { ok: true } or
    { ok: false, reason: 'signin' | 'premium' }. */
+function isFreeWindowActive(freeUntilIso, nowMs) {
+  /* Time source: the client clock (Date.now()). A user who sets their
+     device clock back could stretch the window — a server-time check can
+     be added later if the owner wants it. Missing/invalid FREE_UNTIL
+     means NO free window (fail closed: premium rules apply). */
+  if (!freeUntilIso) return false;
+  var end = Date.parse(freeUntilIso);
+  if (isNaN(end)) return false;
+  return nowMs < end;
+}
 function appAccessFor(s) {
   if (s.loadFailed) return { ok: false, reason: 'offline' };
   if (s.demo) return { ok: true };
   if (!s.user) return { ok: false, reason: 'signin' };
   if (s.admin) return { ok: true };
   if (s.sub) return { ok: true };
+  if (s.free) return { ok: true };
   return { ok: false, reason: 'premium' };
 }
 function appAccess() {
-  return appAccessFor({ demo: DEMO_MODE, loadFailed: sbLoadFailed, admin: isAdmin, user: currentUser, sub: subActive });
+  return appAccessFor({ demo: DEMO_MODE, loadFailed: sbLoadFailed, admin: isAdmin, user: currentUser, sub: subActive, free: isFreeWindowActive(CONFIG.FREE_UNTIL, Date.now()) });
+}
+/* Buy Premium — WhatsApp, never a payment page. There is no checkout
+   in this app: the buyer messages the owner on WhatsApp and the owner
+   grants premium from his account. The number is the owner's
+   +92 308 7215460; wa.me format drops the "+" and the leading 0 after
+   the country code: 92 + 3087215460 = 923087215460. The display number
+   is always shown as plain text too, so a user can copy it manually if
+   WhatsApp does not open. Pure helpers, unit-tested in Node
+   (scripts/test-buy-premium.js); the link is built from CONFIG with a
+   literal fallback so it still works if the config is missing. */
+function whatsappNumber() {
+  return CONFIG.OWNER_WHATSAPP_NUMBER || '923087215460';
+}
+function whatsappDisplayNumber() {
+  return CONFIG.OWNER_WHATSAPP_DISPLAY || '+92 308 7215460';
+}
+function whatsappBuyMessage(username) {
+  var msg = 'Assalam-o-Alaikum, I want to buy Lucky Race Predictor Premium (Rs 3,000).';
+  if (username) msg += ' My username is ' + username + '.';
+  return msg;
+}
+function whatsappBuyUrl(username) {
+  return 'https://wa.me/' + whatsappNumber() + '?text=' + encodeURIComponent(whatsappBuyMessage(username));
+}
+/* The Buy Premium view shown inside the app (lock panel + Account tab):
+   price, the owner's WhatsApp number as plain text, and a Contact button
+   that opens the wa.me link in a new tab. Never a dead button, never a
+   payment page. */
+function buyPremiumHtml(username) {
+  return '<div class="buy-premium"><h3>Buy Premium — Rs 3,000</h3>' +
+    '<p>Message the owner on WhatsApp to buy premium. Premium lasts until the end of the calendar month.</p>' +
+    '<p>WhatsApp: <b>' + whatsappDisplayNumber() + '</b></p>' +
+    '<a class="btn btn-yellow btn-block buy-whatsapp-btn" href="' + whatsappBuyUrl(username) + '" target="_blank" rel="noopener">Contact on WhatsApp</a></div>';
 }
 function lockedHtml(reason) {
   if (reason === 'offline') {
@@ -1320,8 +1369,29 @@ function lockedHtml(reason) {
   return '<div class="locked-panel"><h3>Premium required</h3>' +
     (reason === 'signin'
       ? '<p>Sign in from the Account tab to use this app.</p>'
-      : '<p>This app is for premium users only. Subscriptions end at the end of each calendar month. Ask the owner to grant you premium from his account.</p>') +
+      : '<p>Free use ended on 24 Nov. Buy Premium (Rs 3,000) to keep using the app — premium lasts until the end of the calendar month.</p>' +
+        '<button class="btn btn-yellow buy-premium-btn">Buy Premium (Rs 3,000)</button>') +
     '<button class="btn btn-yellow goto-account-btn">Go to Account</button></div>';
+}
+
+/* Wire the buttons inside a lock panel (used by the tab-lock overlay and
+   the Predict result panel): "Go to Account" and "Buy Premium". Buy
+   Premium swaps the panel for the in-app buy view (owner's WhatsApp
+   number + Contact button); Back restores the lock panel for the same
+   reason it had before. */
+function wireLockedPanel(container, reason) {
+  var go = container.querySelector('.goto-account-btn');
+  if (go) go.addEventListener('click', function () { showTab('account'); });
+  var buy = container.querySelector('.buy-premium-btn');
+  if (buy) buy.addEventListener('click', function () {
+    container.innerHTML = buyPremiumHtml(currentUsername) +
+      '<button class="btn btn-ghost buy-back-btn">Back</button>';
+    var back = container.querySelector('.buy-back-btn');
+    if (back) back.addEventListener('click', function () {
+      container.innerHTML = lockedHtml(reason);
+      wireLockedPanel(container, reason);
+    });
+  });
 }
 
 /* Hides the content of the gated tabs (Predict, Log Race, Stats, Speeds)
@@ -1344,8 +1414,7 @@ function applyTabLocks() {
         sec.appendChild(overlay);
       }
       overlay.innerHTML = lockedHtml(access.reason);
-      var go = overlay.querySelector('.goto-account-btn');
-      if (go) go.addEventListener('click', function () { showTab('account'); });
+      wireLockedPanel(overlay, access.reason);
       sec.classList.add('locked');
     } else {
       sec.classList.remove('locked');
@@ -1369,8 +1438,7 @@ function renderPrediction() {
   var gate = predictionAllowed();
   if (!gate.ok) {
     panel.innerHTML = lockedHtml(gate.reason);
-    var go = panel.querySelector('.goto-account-btn');
-    if (go) go.addEventListener('click', function () { showTab('account'); });
+    wireLockedPanel(panel, gate.reason);
     return;
   }
 
@@ -1977,7 +2045,9 @@ function renderAccount() {
 
   if (!currentUser) {
     var auth = el('div', 'acct-card');
-    auth.innerHTML = '<h3>Sign in</h3><p>Predictions need an account with an active subscription.</p>';
+    auth.innerHTML = '<h3>Sign in</h3><p>' + (isFreeWindowActive(CONFIG.FREE_UNTIL, Date.now())
+      ? 'Free to use until 24 Nov 2026, 23:59 PKT. After that, predictions need an active subscription (Rs 3,000).'
+      : 'Predictions need an account with an active subscription (Rs 3,000).') + '</p>';
     var email = el('input', 'field'); email.type = 'email'; email.placeholder = 'Email'; email.id = 'authEmail';
     var pass = el('input', 'field'); pass.type = 'password'; pass.placeholder = 'Password (min 6 characters)'; pass.id = 'authPass';
     var userField = el('input', 'field'); userField.type = 'text'; userField.placeholder = 'Username (optional, for new accounts)'; userField.id = 'authUsername';
@@ -2102,6 +2172,31 @@ function renderAccount() {
       : (isAdmin ? 'Owner — permanent access, no subscription needed'
         : 'Expired / none — subscriptions end at the end of each calendar month.')));
   status.appendChild(subLine);
+  /* Free-use window + Buy Premium (WhatsApp). Non-premium users see the
+     free window while it lasts ("Free use until 24 Nov") and the premium
+     prompt after it. The Buy button opens the in-app buy view (owner's
+     WhatsApp number + Contact button) — never a dead button, never a
+     payment page. The owner never sees this: his access is permanent. */
+  if (!isAdmin && !subActive) {
+    if (isFreeWindowActive(CONFIG.FREE_UNTIL, Date.now())) {
+      status.appendChild(el('p', null, 'Free use until 24 Nov 2026, 23:59 PKT — after that, premium (Rs 3,000) is needed to keep using the app.'));
+    } else {
+      status.appendChild(el('p', null, 'Free use ended on 24 Nov — buy premium (Rs 3,000) to keep using the app.'));
+    }
+    var buyBtn = el('button', 'btn btn-yellow btn-block', 'Buy Premium (Rs 3,000)');
+    buyBtn.addEventListener('click', function () {
+      if ($('buyPremiumCard')) return; // already open
+      var card = el('div', 'acct-card');
+      card.id = 'buyPremiumCard';
+      card.innerHTML = buyPremiumHtml(currentUsername);
+      var hideBtn = el('button', 'btn btn-ghost', 'Hide');
+      hideBtn.addEventListener('click', function () { card.remove(); });
+      card.appendChild(hideBtn);
+      box.appendChild(card);
+      card.scrollIntoView();
+    });
+    status.appendChild(buyBtn);
+  }
   if (isAdmin) status.appendChild(el('p', null, 'You are the owner of this app.'));
   if (currentUsername) status.appendChild(el('p', null, 'Username: ' + currentUsername));
   var outBtn = el('button', 'btn btn-ghost', 'Sign out');
@@ -2423,6 +2518,10 @@ if (typeof module !== 'undefined' && module.exports) {
     importCsv: importCsv,
     buildReason: buildReason,
     appAccessFor: appAccessFor,
+    isFreeWindowActive: isFreeWindowActive,
+    whatsappBuyMessage: whatsappBuyMessage,
+    whatsappBuyUrl: whatsappBuyUrl,
+    buyPremiumHtml: buyPremiumHtml,
     validateUsername: validateUsername,
     lockedHtml: lockedHtml
   };
