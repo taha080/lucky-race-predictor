@@ -20,14 +20,19 @@ speed table live in `localStorage` and predictions work with no account.
 
 ## Features
 
-- **Predict tab (main)** — tap 3 vehicles, then set the track for any
-  segment you can see (the shown segment can be first, second or third).
-  Every segment defaults to **Unknown** and is never guessed — tap a track
-  to hint it (with a rough chance: 10–90% or Pin 100%). A one-tap Reset
-  sets all three segments back to Unknown. Optionally set odds with −/+
-  steppers. The **top 2 picks** with a confidence % and a short reason
-  appear **instantly on every tap** — no submit button. A 35-second
-  betting timer is included as a visual aid.
+- **Predict tab (main)** — a step-by-step wizard: **START** → pick 3
+  vehicles → pin the ONE track the game shows (the shown segment can be
+  first, second or third; the other two stay **Unknown**, never guessed)
+  → **RUN**. The **top 2 picks** with a confidence % and a short reason
+  appear when you tap RUN — the whole START-to-RUN path is a few taps,
+  well inside the 35-second betting timer (shown on every step). There
+  is no odds step: odds only track how people bet, so they do not feed
+  the prediction. Under the result, **feedback** asks "Was this
+  prediction right?" — Correct saves the race with the MAIN pick as
+  winner, Wrong asks which vehicle actually won and saves that. The
+  last run stays on screen (even across reloads) so feedback can be
+  given after the race finishes. A 35-second betting timer is included
+  as a visual aid.
 - **Log Race tab** — fast logging of past races: 3 vehicles, 3 segment
   tracks (any segment may be left **Unknown** — stored as the real value
   `"unknown"`), on-screen patterns, winner, how it won, odds. Edit /
@@ -127,16 +132,23 @@ speed table live in `localStorage` and predictions work with no account.
    might mean only a 10–20% chance of Dirt, not a guaranteed Dirt segment.
    Patterns change every round — the app never assumes a fixed daily
    pattern, and it relearns from every newly saved race.
-4. **History blend.** When **150+** races are saved, the speed model is
+4. **History blend.** When **30+** races are saved, the speed model is
    blended with the actual win rate for the same 3-vehicle set + the same
-   known (pinned) segments: `w = clamp((N_total − 150) / 350, 0, 0.5)`,
+   known (pinned) segments: `w = clamp((N_total − 30) / 120, 0, 0.5)`,
    applied only if at least **5** saved races match that exact set +
-   known segments.
+   known segments. At 57 saved races the weight is 0.225 — real but
+   modest, so the speed model still decides and history only nudges it.
+   (The gate was 150 races until 21 Nov 2026; it came down to 30 so
+   every prediction uses all 57 saved races.)
    `P_final = (1 − w) × P_model + w × P_hist`.
    The win counts behind `P_hist` are decay-weighted by recency (newest
    race weight 1.0, halving every `HISTORY_HALF_LIFE_RACES` races, see
-   above); the 150-race gate and the 5-match minimum still use plain
-   counts.
+   above); the 30-race gate and the 5-match minimum still use plain
+   counts. Note: with 57 races no vehicle set repeats 5 times yet
+   (the most common set appears 3 times), so the blend does not fire
+   on the current data — it starts engaging as soon as any set reaches
+   5 saved races, which the Predict feedback flow now feeds on every
+   confirmed prediction.
 5. **Output.** Always the **top 2 of the 3** vehicles, each with a
    confidence % (its win probability) and a short reason (e.g. fastest on
    Desert, strong on likely hidden tracks). The #1 vehicle is shown as

@@ -29,7 +29,7 @@
   </header>
 
   <main>
-    <!-- ============ PREDICT ============ -->
+    <!-- ============ PREDICT (step-by-step wizard) ============ -->
     <section id="tab-predict" class="tab active">
       <div class="timer-row">
         <span class="timer-label">Betting timer</span>
@@ -37,33 +37,65 @@
         <button id="timerBtn" class="btn btn-yellow btn-small">Start 35s timer</button>
       </div>
 
-      <h2 class="section-title"><span class="step-num">1</span>Pick 3 vehicles <span id="pickCount" class="pick-count">0/3</span></h2>
-      <div id="predictVehicles" class="vehicle-grid"></div>
-
-      <p class="help-text">The game shows only ONE track before you bet — tap just that one track; it counts as known. The other two segments stay Unknown. Tapping a second track moves the known track there.</p>
-
-      <h2 class="section-title"><span class="step-num">2</span>Pin the track the game shows</h2>
-      <h3 class="sub-title">Segment 1 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
-      <div id="seg1Tracks" class="track-row"></div>
-
-      <h3 class="sub-title">Segment 2 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
-      <div id="seg2Tracks" class="track-row"></div>
-
-      <h3 class="sub-title">Segment 3 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
-      <div id="seg3Tracks" class="track-row"></div>
-
-      <button id="resetSegsBtn" class="btn btn-ghost btn-block">Reset — clear vehicles &amp; segments</button>
-
-      <div id="oddsBox" class="odds-box hidden">
-        <h2 class="section-title"><span class="step-num">3</span>Odds on each card <span class="hint-note">(optional — tap − / +)</span></h2>
-        <div id="oddsRows"></div>
+      <!-- Step 0: START -->
+      <div id="wizStart" class="wiz-step">
+        <h2 class="section-title">Ready to predict?</h2>
+        <p class="help-text">Tap START, pick the 3 vehicles in the race, pin the one track the game shows, then RUN — a few taps, well inside the 35-second betting timer.</p>
+        <p class="help-text">After the race finishes, come back here and say if the prediction was right. Every answer you give is saved as a race and teaches the model.</p>
+        <button id="startBtn" class="btn btn-yellow btn-block btn-big">START</button>
+        <p class="help-text" id="wizStartCount"></p>
       </div>
 
-      <h2 class="section-title"><span class="step-num">4</span>Your prediction</h2>
-      <div id="resultPanel" class="result-panel">
-        <p class="result-empty">Pick 3 vehicles to see the prediction.</p>
+      <!-- Step 1: Pick 3 vehicles -->
+      <div id="wizPick" class="wiz-step hidden">
+        <h2 class="section-title"><span class="step-num">1</span>Pick 3 vehicles <span id="pickCount" class="pick-count">0/3</span></h2>
+        <div id="predictVehicles" class="vehicle-grid"></div>
+        <button id="toPinBtn" class="btn btn-yellow btn-block" disabled>Next: pin the track →</button>
+        <button id="backToStartBtn" class="btn btn-ghost btn-block">← Back</button>
       </div>
-      <p id="assumedLine" class="assumed-line"></p>
+
+      <!-- Step 2: Pin the track the game shows -->
+      <div id="wizPin" class="wiz-step hidden">
+        <p class="help-text">The game shows only ONE track before you bet — tap just that one track; it counts as known. The other two segments stay Unknown. Tapping a second track moves the known track there.</p>
+
+        <h2 class="section-title"><span class="step-num">2</span>Pin the track the game shows</h2>
+        <h3 class="sub-title">Segment 1 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
+        <div id="seg1Tracks" class="track-row"></div>
+
+        <h3 class="sub-title">Segment 2 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
+        <div id="seg2Tracks" class="track-row"></div>
+
+        <h3 class="sub-title">Segment 3 <span class="hint-note">(tap the track the game shows, or leave Unknown)</span></h3>
+        <div id="seg3Tracks" class="track-row"></div>
+
+        <button id="runBtn" class="btn btn-yellow btn-block btn-big">RUN — get prediction</button>
+        <button id="backToPickBtn" class="btn btn-ghost btn-block">← Back to vehicles</button>
+      </div>
+
+      <!-- Step 3: Result + feedback -->
+      <div id="wizResult" class="wiz-step hidden">
+        <h2 class="section-title"><span class="step-num">3</span>Your prediction</h2>
+        <div id="resultPanel" class="result-panel">
+          <p class="result-empty">Tap RUN to see the prediction.</p>
+        </div>
+        <p id="assumedLine" class="assumed-line"></p>
+
+        <div id="feedbackBox" class="feedback-box hidden">
+          <h3 class="sub-title">Was this prediction right?</h3>
+          <p class="help-text">Answer after the race finishes — your answer is saved as a race and teaches the model.</p>
+          <div id="feedbackBtns" class="feedback-btns">
+            <button id="fbCorrectBtn" class="btn btn-yellow">✓ Correct — MAIN pick won</button>
+            <button id="fbWrongBtn" class="btn btn-ghost">✗ Wrong</button>
+          </div>
+          <div id="fbWinnerRow" class="hidden">
+            <p class="help-text">Which vehicle actually won?</p>
+            <div id="fbWinnerBtns" class="winner-row"></div>
+          </div>
+          <p id="fbSavedMsg" class="help-text hidden"></p>
+        </div>
+
+        <button id="newPredBtn" class="btn btn-yellow btn-block">New prediction</button>
+      </div>
     </section>
 
     <!-- ============ LOG RACE ============ -->
