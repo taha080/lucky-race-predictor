@@ -3,8 +3,8 @@
    Prediction runs entirely in the browser (<100ms for 36 combos).
    ----------------------------------------------------------------------------
    PREDICTION MODEL (see README.md for the full description):
-   - 3 segments with length weights SEGMENT_LENGTHS (default [0.157, 0.557,
-     0.286], editable in js/config.js; equal thirds if unset).
+   - 3 segments with length weights SEGMENT_LENGTHS (default [0.189, 0.511,
+     0.300], editable in js/config.js; equal thirds if unset).
      Time(v) = L1/speed[v][t1] + L2/speed[v][t2] + L3/speed[v][t3].
    - Any segment can be Unknown: the shown segment may be in ANY position
      (first, second or third) — or no segment may be shown at all. Unknown
@@ -87,6 +87,16 @@ var VEHICLE_ALIASES = { motor: 'Motorcycle', normal: 'Car' };
 function resolveVehicleName(name) {
   var key = (name || '').trim().toLowerCase();
   return VEHICLE_ALIASES[key] || (name || '').trim();
+}
+
+// Track name aliases for imported CSV rows: the user writes "petrol"
+// or "pathole" (his spelling) for Potholes. Case-insensitive; like the
+// vehicle aliases, they only matter for imported CSV rows. No track is
+// dropped or renamed by this.
+var TRACK_ALIASES = { petrol: 'Potholes', pathole: 'Potholes' };
+function resolveTrackName(name) {
+  var key = (name || '').trim().toLowerCase();
+  return TRACK_ALIASES[key] || (name || '').trim();
 }
 
 /* Duplicate rule: a race is a duplicate of a saved race when it has the
@@ -211,8 +221,8 @@ function decayWeight(ageInRaces, halfLife) {
 
 /* Segment length weights: how much of a race each segment covers
    (fractions summing to 1). Editable in js/config.js as SEGMENT_LENGTHS
-   (default [0.157, 0.557, 0.286], derived from full-track races 21-27 —
-   see README: seg1 1.10/7, seg2 3.90/7, seg3 2.00/7). Must be 3 finite
+   (default [0.189, 0.511, 0.300], derived from full-track races 21-29 —
+   see README: seg1 1.70/9, seg2 4.60/9, seg3 2.70/9). Must be 3 finite
    positive numbers, else equal thirds. Values are normalised to sum to 1. */
 function segmentLengths() {
   var s = CONFIG && CONFIG.SEGMENT_LENGTHS;
@@ -763,8 +773,12 @@ function renderPrediction() {
     var reason = buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
     var pct = Math.round(r.prob * 100);
     var oddsTxt = pred.odds[r.vehicle] ? ' · Odds ' + pred.odds[r.vehicle].toFixed(1) : '';
-    html += '<div class="result-card rank-' + (idx + 1) + '">' +
-      '<div class="result-head"><span class="result-name">#' + (idx + 1) + ' ' + r.vehicle + '</span>' +
+    // #1 is the MAIN PICK (big, highlighted); #2 is the smaller BACKUP PICK.
+    var isMain = idx === 0;
+    var label = isMain ? 'MAIN PICK' : 'BACKUP PICK';
+    html += '<div class="result-card rank-' + (idx + 1) + (isMain ? ' main-pick' : ' backup-pick') + '">' +
+      '<div class="result-label">' + label + '</div>' +
+      '<div class="result-head"><span class="result-name">' + r.vehicle + '</span>' +
       '<span class="result-conf">' + pct + '%</span></div>' +
       '<div class="conf-bar"><div class="conf-fill" style="width:' + pct + '%"></div></div>' +
       '<div class="result-reason">' + reason + oddsTxt + '</div></div>';
@@ -1194,7 +1208,7 @@ async function importCsv(file) {
   for (var li = 1; li < lines.length; li++) {
     var c = parseCsvLine(lines[li]);
     var vehicles = (c[idx.vehicles] || '').split('|').map(function (s) { return resolveVehicleName(s); }).filter(Boolean);
-    var tracks = [c[idx.track1], c[idx.track2], c[idx.track3]].map(function (s) { return (s || '').trim(); });
+    var tracks = [c[idx.track1], c[idx.track2], c[idx.track3]].map(function (s) { return resolveTrackName(s); });
     var winner = resolveVehicleName(c[idx.winner] || '');
     var ok = vehicles.length === 3 &&
       vehicles.every(function (v) { return vehicleByName(v); }) &&
@@ -1477,6 +1491,7 @@ if (typeof module !== 'undefined' && module.exports) {
     historyHalfLife: historyHalfLife,
     segmentLengths: segmentLengths,
     resolveVehicleName: resolveVehicleName,
+    resolveTrackName: resolveTrackName,
     importCsv: importCsv,
     buildReason: buildReason
   };
