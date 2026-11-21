@@ -34,7 +34,7 @@ var LRP_CONFIG = {
   // must ALSO have profiles.is_admin = true (set it in the Supabase SQL
   // editor). See sql/schema.sql and README.md.
   ADMIN_EMAILS: [
-    // "owner@example.com"
+    "ahantaha16@gmail.com"
   ]
 };
 

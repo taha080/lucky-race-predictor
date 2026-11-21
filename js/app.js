@@ -587,6 +587,7 @@ function showTab(name) {
   if (name === 'stats') renderStats();
   if (name === 'log') renderRaceList();
   if (name === 'account') renderAccount();
+  applyTabLocks();
   window.scrollTo(0, 0);
 }
 
@@ -719,11 +720,66 @@ function renderOddsBox() {
   });
 }
 
+/* Full-app premium gate.
+   Who can use the software:
+   - Demo mode (Supabase unconfigured): everyone, predictions unlocked.
+   - Admins / owner (ADMIN_EMAILS in js/config.js or profiles.is_admin):
+     PERMANENT access. The owner NEVER needs a subscription — the bypass
+     is by admin/owner status, never by a subscription row (an admin's
+     subscription row, if one exists, is irrelevant to their own access).
+   - Everyone else: an active subscription is required to use any tab.
+   Pure core (appAccessFor) is unit-tested in Node; appAccess() reads the
+   live session state. Returns { ok: true } or
+   { ok: false, reason: 'signin' | 'premium' }. */
+function appAccessFor(s) {
+  if (s.demo) return { ok: true };
+  if (!s.user) return { ok: false, reason: 'signin' };
+  if (s.admin) return { ok: true };
+  if (s.sub) return { ok: true };
+  return { ok: false, reason: 'premium' };
+}
+function appAccess() {
+  return appAccessFor({ demo: DEMO_MODE, admin: isAdmin, user: currentUser, sub: subActive });
+}
+function lockedHtml(reason) {
+  return '<div class="locked-panel"><h3>Premium required</h3>' +
+    (reason === 'signin'
+      ? '<p>Sign in from the Account tab to use this app.</p>'
+      : '<p>This app is for premium users only. Subscriptions end at the end of each calendar month. Ask the owner to grant you premium from his account.</p>') +
+    '<button class="btn btn-yellow goto-account-btn">Go to Account</button></div>';
+}
+
+/* Hides the content of the gated tabs (Predict, Log Race, Stats, Speeds)
+   behind the premium lock overlay, and restores it when access is granted.
+   The Account tab is never locked. The overlay div is created once per
+   tab; the section's real content is only hidden, never removed, so all
+   event listeners survive. */
+var GATED_TABS = ['predict', 'log', 'stats', 'speeds'];
+function applyTabLocks() {
+  if (typeof document === 'undefined') return;
+  var access = appAccess();
+  GATED_TABS.forEach(function (name) {
+    var sec = $('tab-' + name);
+    if (!sec) return;
+    if (!access.ok) {
+      var overlay = sec.querySelector('.tab-lock');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'tab-lock';
+        sec.appendChild(overlay);
+      }
+      overlay.innerHTML = lockedHtml(access.reason);
+      var go = overlay.querySelector('.goto-account-btn');
+      if (go) go.addEventListener('click', function () { showTab('account'); });
+      sec.classList.add('locked');
+    } else {
+      sec.classList.remove('locked');
+    }
+  });
+}
+
 function predictionAllowed() {
-  if (DEMO_MODE) return { ok: true };
-  if (!currentUser) return { ok: false, reason: 'signin' };
-  if (!subActive) return { ok: false, reason: 'expired' };
-  return { ok: true };
+  return appAccess();
 }
 
 function renderPrediction() {
@@ -733,12 +789,8 @@ function renderPrediction() {
 
   var gate = predictionAllowed();
   if (!gate.ok) {
-    panel.innerHTML = '<div class="locked-panel"><h3>Predictions are locked</h3>' +
-      (gate.reason === 'signin'
-        ? '<p>Sign in from the Account tab to use predictions.</p>'
-        : '<p>Your subscription has expired (subscriptions end at the end of each calendar month). Renew from the Account tab or ask the admin to grant a new one.</p>') +
-      '<button class="btn btn-yellow" id="gotoAccountBtn">Go to Account</button></div>';
-    var go = $('gotoAccountBtn');
+    panel.innerHTML = lockedHtml(gate.reason);
+    var go = panel.querySelector('.goto-account-btn');
     if (go) go.addEventListener('click', function () { showTab('account'); });
     return;
   }
@@ -960,6 +1012,7 @@ function resetLogForm() {
 }
 
 async function saveRace() {
+  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
   if (logForm.vehicles.length !== 3) { toast('Pick 3 vehicles first.'); return; }
   if (!logForm.winner) { toast('Pick the winner.'); return; }
   if (!logForm.howWon) { toast('Pick how it won.'); return; }
@@ -1162,6 +1215,7 @@ function racesToCsv() {
 }
 
 function downloadCsv() {
+  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
   var blob = new Blob([racesToCsv()], { type: 'text/csv' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1198,6 +1252,7 @@ function isValidRaceTracks(tracks) {
 }
 
 async function importCsv(file) {
+  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
   var text = await file.text();
   var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length; });
   if (lines.length < 2) { toast('CSV is empty.'); return; }
@@ -1265,6 +1320,7 @@ function renderSpeedTable() {
 }
 
 function saveSpeeds() {
+  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
   var inputs = document.querySelectorAll('#speedTable input');
   var next = cloneSpeeds(speeds);
   inputs.forEach(function (inp) {
@@ -1320,12 +1376,25 @@ function renderAccount() {
     return;
   }
 
+  /* Owner profile: a distinct card at the top of the Account tab for the
+     admin/owner, with his email and an OWNER badge. His access is
+     permanent — he never needs a subscription. */
+  if (isAdmin) {
+    var owner = el('div', 'acct-card owner-card');
+    owner.innerHTML = '<h3><span class="owner-badge">OWNER</span> ' + currentUser.email + '</h3>' +
+      '<p>Your access is permanent — as the owner you never need a subscription. ' +
+      'Grant premium to anyone from the users list below. Only users with an active subscription can use this app.</p>';
+    box.appendChild(owner);
+  }
+
   var status = el('div', 'acct-card');
   status.innerHTML = '<h3>' + currentUser.email + '</h3>' +
     '<p>Subscription: ' + (subActive
       ? '<span class="sub-active">Active until ' + fmtDate(subExpiresAt) + '</span>'
-      : '<span class="sub-expired">Expired / none</span> — subscriptions end at the end of each calendar month.') + '</p>' +
-    (isAdmin ? '<p>You are an admin.</p>' : '');
+      : (isAdmin
+        ? '<span class="sub-active">Owner — permanent access, no subscription needed</span>'
+        : '<span class="sub-expired">Expired / none</span> — subscriptions end at the end of each calendar month.')) + '</p>' +
+    (isAdmin ? '<p>You are the owner of this app.</p>' : '');
   var outBtn = el('button', 'btn btn-ghost', 'Sign out');
   outBtn.addEventListener('click', async function () {
     await sb.auth.signOut();
@@ -1333,6 +1402,7 @@ function renderAccount() {
     races = loadLocalRaces();
     renderAccount();
     renderPrediction();
+    applyTabLocks();
     toast('Signed out.');
   });
   status.appendChild(outBtn);
@@ -1343,7 +1413,7 @@ function renderAccount() {
 
 async function renderAdminPanel(box) {
   var card = el('div', 'acct-card');
-  card.innerHTML = '<h3>Admin — users &amp; subscriptions</h3><p>Grant sets the subscription to the end of the current calendar month. Revoke blocks predictions immediately.</p><p class="help-text">Loading users…</p>';
+  card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p>Grant premium to any user from your own account. A grant lasts until the end of the current calendar month. Revoking blocks the whole app for that user immediately.</p><p class="help-text">Loading users…</p>';
   box.appendChild(card);
   try {
     var profs = await sb.from('profiles').select('id, email, is_admin').order('email');
@@ -1355,7 +1425,7 @@ async function renderAdminPanel(box) {
         subByUser[s.user_id] = s;
       }
     });
-    card.innerHTML = '<h3>Admin — users &amp; subscriptions</h3><p>Grant sets the subscription to the end of the current calendar month. Revoke blocks predictions immediately.</p>';
+    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p>Grant premium to any user from your own account. A grant lasts until the end of the current calendar month. Revoking blocks the whole app for that user immediately.</p>';
     if (!(profs.data || []).length) {
       card.appendChild(el('p', 'help-text', 'No users found.'));
       return;
@@ -1366,7 +1436,7 @@ async function renderAdminPanel(box) {
       var active = sub && new Date(sub.expires_at) > new Date();
       row.innerHTML = '<span class="u-email">' + u.email + (u.is_admin ? ' (admin)' : '') + '</span>' +
         '<span class="u-sub">' + (active ? 'Active to ' + fmtDate(sub.expires_at) : 'No active sub') + '</span>';
-      var grantBtn = el('button', 'btn btn-yellow', 'Grant');
+      var grantBtn = el('button', 'btn btn-yellow', 'Grant premium');
       grantBtn.addEventListener('click', async function () {
         var res = await sb.from('subscriptions').upsert({
           user_id: u.id,
@@ -1375,14 +1445,14 @@ async function renderAdminPanel(box) {
           granted_by: currentUser.id
         }, { onConflict: 'user_id' });
         if (res.error) { toast('Grant failed: ' + res.error.message); return; }
-        toast('Subscription granted to ' + u.email + '.');
+        toast('Premium granted to ' + u.email + '.');
         renderAccount();
       });
-      var revokeBtn = el('button', 'btn btn-ghost', 'Revoke');
+      var revokeBtn = el('button', 'btn btn-ghost', 'Revoke premium');
       revokeBtn.addEventListener('click', async function () {
         var res = await sb.from('subscriptions').update({ status: 'revoked' }).eq('user_id', u.id).eq('status', 'active');
         if (res.error) { toast('Revoke failed: ' + res.error.message); return; }
-        toast('Subscription revoked for ' + u.email + '.');
+        toast('Premium revoked for ' + u.email + '.');
         renderAccount();
       });
       row.appendChild(grantBtn);
@@ -1390,7 +1460,7 @@ async function renderAdminPanel(box) {
       card.appendChild(row);
     });
   } catch (e) {
-    card.innerHTML = '<h3>Admin — users &amp; subscriptions</h3><p class="help-text">Could not load users: ' + e.message +
+    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p class="help-text">Could not load users: ' + e.message +
       '. Make sure profiles.is_admin = true for your account (see README.md).</p>';
   }
 }
@@ -1401,6 +1471,7 @@ async function afterAuth() {
   renderAccount();
   renderPrediction();
   renderRaceList();
+  applyTabLocks();
 }
 
 /* ============================================================================
@@ -1462,6 +1533,7 @@ function init() {
     renderPrediction();
     renderRaceList();
     renderStats();
+    applyTabLocks();
   })();
 }
 
@@ -1493,6 +1565,8 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveVehicleName: resolveVehicleName,
     resolveTrackName: resolveTrackName,
     importCsv: importCsv,
-    buildReason: buildReason
+    buildReason: buildReason,
+    appAccessFor: appAccessFor,
+    lockedHtml: lockedHtml
   };
 }
