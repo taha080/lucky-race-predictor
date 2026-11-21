@@ -2044,95 +2044,227 @@ function renderAccount() {
   }
 
   if (!currentUser) {
-    var auth = el('div', 'acct-card');
-    auth.innerHTML = '<h3>Sign in</h3><p>' + (isFreeWindowActive(CONFIG.FREE_UNTIL, Date.now())
+    /* Athera-style auth: centred white card, Sign in / Sign up tabs,
+       labelled fields, show/hide password, inline errors. Same auth
+       rules as before (email + password min 6; username optional). */
+    var wrap = el('div', 'auth-wrap');
+    var brand = el('div', 'auth-brand');
+    brand.innerHTML = '<div class="auth-logo">LUCKY <span>RACE</span></div>' +
+      '<div class="auth-name">Lucky Race Predictor</div>' +
+      '<p class="auth-sub">Smart picks from your saved races</p>';
+    wrap.appendChild(brand);
+
+    var auth = el('div', 'auth-card');
+    var title = el('h1', 'auth-title', 'Sign in');
+    auth.appendChild(title);
+
+    var tabs = el('div', 'auth-tabs');
+    tabs.setAttribute('role', 'tablist');
+    var tabIn = el('button', 'auth-tab active', 'Sign in');
+    var tabUp = el('button', 'auth-tab', 'Sign up');
+    tabIn.type = 'button'; tabUp.type = 'button';
+    tabs.appendChild(tabIn); tabs.appendChild(tabUp);
+    auth.appendChild(tabs);
+
+    auth.appendChild(el('p', 'auth-note', isFreeWindowActive(CONFIG.FREE_UNTIL, Date.now())
       ? 'Free to use until 24 Nov 2026, 23:59 PKT. After that, predictions need an active subscription (Rs 3,000).'
-      : 'Predictions need an account with an active subscription (Rs 3,000).') + '</p>';
-    var email = el('input', 'field'); email.type = 'email'; email.placeholder = 'Email'; email.id = 'authEmail';
-    var pass = el('input', 'field'); pass.type = 'password'; pass.placeholder = 'Password (min 6 characters)'; pass.id = 'authPass';
-    var userField = el('input', 'field'); userField.type = 'text'; userField.placeholder = 'Username (optional, for new accounts)'; userField.id = 'authUsername';
-    userField.maxLength = 20;
-    /* Persistent inline message (stays visible, unlike the 2.6s toast)
-       so sign-up / sign-in / reset errors are actually read. */
-    var authMsg = el('p', 'help-text auth-msg');
-    authMsg.style.display = 'none';
-    function setAuthMsg(text) {
-      authMsg.textContent = text || '';
-      authMsg.style.display = text ? '' : 'none';
+      : 'Predictions need an account with an active subscription (Rs 3,000).'));
+
+    /* Username — sign-up only */
+    var userBlock = el('div', 'auth-field-block');
+    userBlock.style.display = 'none';
+    var userLabel = el('label', 'auth-label', 'Username');
+    userLabel.appendChild(el('span', 'auth-hint', 'optional'));
+    var userField = el('input', 'auth-input'); userField.type = 'text'; userField.placeholder = 'yourname'; userField.id = 'authUsername'; userField.maxLength = 20; userField.autocomplete = 'username';
+    userBlock.appendChild(userLabel); userBlock.appendChild(userField);
+    auth.appendChild(userBlock);
+
+    /* Email */
+    var emailBlock = el('div', 'auth-field-block');
+    emailBlock.appendChild(el('label', 'auth-label', 'Email'));
+    var email = el('input', 'auth-input'); email.type = 'email'; email.placeholder = 'you@example.com'; email.id = 'authEmail'; email.autocomplete = 'email';
+    var emailErr = el('span', 'auth-field-error'); emailErr.style.display = 'none';
+    emailBlock.appendChild(email); emailBlock.appendChild(emailErr);
+    auth.appendChild(emailBlock);
+
+    /* Password + show/hide */
+    var passBlock = el('div', 'auth-field-block');
+    var passLabel = el('label', 'auth-label', 'Password');
+    var passHint = el('span', 'auth-hint', 'At least 6 characters');
+    passHint.style.display = 'none';
+    passLabel.appendChild(passHint);
+    var passWrap = el('span', 'auth-field-wrap');
+    var pass = el('input', 'auth-input'); pass.type = 'password'; pass.placeholder = '••••••••'; pass.id = 'authPass'; pass.autocomplete = 'current-password';
+    var showBtn = el('button', 'auth-show', 'Show'); showBtn.type = 'button';
+    showBtn.addEventListener('click', function () {
+      var show = pass.type === 'password';
+      pass.type = show ? 'text' : 'password';
+      showBtn.textContent = show ? 'Hide' : 'Show';
+    });
+    passWrap.appendChild(pass); passWrap.appendChild(showBtn);
+    var passErr = el('span', 'auth-field-error'); passErr.style.display = 'none';
+    passBlock.appendChild(passLabel); passBlock.appendChild(passWrap); passBlock.appendChild(passErr);
+    auth.appendChild(passBlock);
+
+    /* Confirm password — sign-up only */
+    var confBlock = el('div', 'auth-field-block');
+    confBlock.style.display = 'none';
+    confBlock.appendChild(el('label', 'auth-label', 'Confirm password'));
+    var confWrap = el('span', 'auth-field-wrap');
+    var conf = el('input', 'auth-input'); conf.type = 'password'; conf.placeholder = '••••••••'; conf.autocomplete = 'new-password';
+    var showConf = el('button', 'auth-show', 'Show'); showConf.type = 'button';
+    showConf.addEventListener('click', function () {
+      var show = conf.type === 'password';
+      conf.type = show ? 'text' : 'password';
+      showConf.textContent = show ? 'Hide' : 'Show';
+    });
+    confWrap.appendChild(conf); confWrap.appendChild(showConf);
+    var confErr = el('span', 'auth-field-error'); confErr.style.display = 'none';
+    confBlock.appendChild(confWrap); confBlock.appendChild(confErr);
+    auth.appendChild(confBlock);
+
+    /* Error / info boxes (Athera-style tinted boxes) */
+    var errBox = el('p', 'auth-error'); errBox.style.display = 'none';
+    var infoBox = el('p', 'auth-info'); infoBox.style.display = 'none';
+    auth.appendChild(errBox); auth.appendChild(infoBox);
+    function setErr(text) { errBox.textContent = text || ''; errBox.style.display = text ? '' : 'none'; if (text) infoBox.style.display = 'none'; }
+    function setInfo(text) { infoBox.textContent = text || ''; infoBox.style.display = text ? '' : 'none'; if (text) errBox.style.display = 'none'; }
+    function setFieldErr(node, text) { node.textContent = text || ''; node.style.display = text ? '' : 'none'; }
+
+    var submitBtn = el('button', 'btn btn-yellow btn-block', 'Sign in');
+    var forgotBtn = el('button', 'auth-secondary', 'Forgot password?');
+    auth.appendChild(submitBtn); auth.appendChild(forgotBtn);
+
+    var mode = 'sign-in';
+    function setMode(m) {
+      mode = m;
+      title.textContent = m === 'sign-up' ? 'Create your account' : 'Sign in';
+      tabIn.classList.toggle('active', m === 'sign-in');
+      tabUp.classList.toggle('active', m === 'sign-up');
+      userBlock.style.display = m === 'sign-up' ? '' : 'none';
+      confBlock.style.display = m === 'sign-up' ? '' : 'none';
+      passHint.style.display = m === 'sign-up' ? '' : 'none';
+      pass.autocomplete = m === 'sign-up' ? 'new-password' : 'current-password';
+      submitBtn.textContent = m === 'sign-up' ? 'Create account' : 'Sign in';
+      forgotBtn.style.display = m === 'sign-in' ? '' : 'none';
+      setErr(''); setInfo('');
+      setFieldErr(emailErr, ''); setFieldErr(passErr, ''); setFieldErr(confErr, '');
     }
-    var inBtn = el('button', 'btn btn-yellow btn-block', 'Sign in');
-    var upBtn = el('button', 'btn btn-ghost btn-block', 'Create account');
-    var forgotBtn = el('button', 'btn btn-ghost btn-block', 'Forgot password?');
-    function setBusy(busy) {
-      inBtn.disabled = busy; upBtn.disabled = busy; forgotBtn.disabled = busy;
-    }
-    inBtn.addEventListener('click', async function () {
+    tabIn.addEventListener('click', function () { setMode('sign-in'); });
+    tabUp.addEventListener('click', function () { setMode('sign-up'); });
+
+    function setBusy(busy) { submitBtn.disabled = busy; forgotBtn.disabled = busy; tabIn.disabled = busy; tabUp.disabled = busy; }
+
+    function validEmail() {
       var em = email.value.trim();
-      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter a valid email address.'); return; }
-      if (!pass.value || pass.value.length < 6) { setAuthMsg('Password must be at least 6 characters.'); return; }
-      setAuthMsg(''); setBusy(true);
+      if (!em || em.indexOf('@') === -1) { setFieldErr(emailErr, 'Enter a valid email address.'); return null; }
+      setFieldErr(emailErr, '');
+      return em;
+    }
+    function validPass() {
+      if (!pass.value || pass.value.length < 6) { setFieldErr(passErr, 'Password must be at least 6 characters.'); return false; }
+      setFieldErr(passErr, '');
+      return true;
+    }
+
+    submitBtn.addEventListener('click', async function () {
+      var em = validEmail();
+      if (!em || !validPass()) return;
+      if (mode === 'sign-up') {
+        if (!conf.value || pass.value !== conf.value) { setFieldErr(confErr, 'Those passwords do not match.'); return; }
+        setFieldErr(confErr, '');
+        var uname = userField.value.trim();
+        var meta = {};
+        if (uname) {
+          var check = validateUsername(uname);
+          if (!check.ok) { setErr(check.reason); return; }
+          meta.username = check.value;
+        }
+        setErr(''); setInfo(''); setBusy(true);
+        var upRes = await sb.auth.signUp({
+          email: em, password: pass.value,
+          options: { data: meta, emailRedirectTo: authRedirectUrl() }
+        });
+        setBusy(false);
+        if (upRes.error) { setErr(upRes.error.message); toast(upRes.error.message); return; }
+        setInfo('Account created. Check your email for the confirmation link, then sign in — the link opens this app and signs you in. If no email arrives, wait a little before trying again (only a few account emails can be sent per hour).');
+        toast('Account created — check your email.');
+        await afterAuth();
+        return;
+      }
+      setErr(''); setInfo(''); setBusy(true);
       var res = await sb.auth.signInWithPassword({ email: em, password: pass.value });
       setBusy(false);
       if (res.error) {
         var hint = /invalid login/i.test(res.error.message)
           ? 'Wrong email or password — or the account is not confirmed yet. Check your inbox for the confirmation link, then try again.'
           : res.error.message;
-        setAuthMsg(hint);
+        setErr(hint);
         toast(res.error.message);
         return;
       }
       authLinkError = null;
       await afterAuth();
     });
-    upBtn.addEventListener('click', async function () {
-      var em = email.value.trim();
-      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter a valid email address.'); return; }
-      if (!pass.value || pass.value.length < 6) { setAuthMsg('Password must be at least 6 characters.'); return; }
-      var uname = userField.value.trim();
-      var meta = {};
-      if (uname) {
-        var check = validateUsername(uname);
-        if (!check.ok) { setAuthMsg(check.reason); return; }
-        meta.username = check.value;
-      }
-      setAuthMsg(''); setBusy(true);
-      var res = await sb.auth.signUp({
-        email: em, password: pass.value,
-        options: { data: meta, emailRedirectTo: authRedirectUrl() }
-      });
-      setBusy(false);
-      if (res.error) { setAuthMsg(res.error.message); toast(res.error.message); return; }
-      setAuthMsg('Account created. Check your email for the confirmation link, then sign in — the link opens this app and signs you in. If no email arrives, wait a little before trying again (only a few account emails can be sent per hour).');
-      toast('Account created — check your email.');
-      await afterAuth();
-    });
+
     forgotBtn.addEventListener('click', async function () {
-      var em = email.value.trim();
-      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter your email above first, then tap "Forgot password?".'); return; }
-      setAuthMsg(''); setBusy(true);
+      var em = validEmail();
+      if (!em) { setErr('Enter your email above first, then tap "Forgot password?".'); return; }
+      setErr(''); setInfo(''); setBusy(true);
       var res = await sb.auth.resetPasswordForEmail(em, { redirectTo: authRedirectUrl() });
       setBusy(false);
-      if (res.error) { setAuthMsg(res.error.message); toast(res.error.message); return; }
-      setAuthMsg('Reset link sent to ' + em + ' — check your inbox (and spam). The link signs you in and lets you set a new password. Only a few account emails can be sent per hour, so if you requested links recently, wait a bit before trying again.');
+      if (res.error) { setErr(res.error.message); toast(res.error.message); return; }
+      setInfo('Reset link sent to ' + em + ' — check your inbox (and spam). The link signs you in and lets you set a new password. Only a few account emails can be sent per hour, so if you requested links recently, wait a bit before trying again.');
       toast('Reset link sent — check your email.');
     });
-    auth.appendChild(email); auth.appendChild(pass); auth.appendChild(userField);
-    auth.appendChild(inBtn); auth.appendChild(upBtn); auth.appendChild(forgotBtn);
-    auth.appendChild(authMsg);
-    box.appendChild(auth);
+
+    wrap.appendChild(auth);
+    wrap.appendChild(el('p', 'auth-footer', 'Created by Taha Ahsan'));
+    box.appendChild(wrap);
     return;
   }
 
   /* Set-new-password form: shown when the user arrived from a password-
-     recovery email link (PASSWORD_RECOVERY session). This is how a user
-     sets a password after clicking a recovery link. */
+     recovery email link (PASSWORD_RECOVERY session). Same Athera-style
+     card as the sign-in form. */
   if (recoveryMode) {
-    var rec = el('div', 'acct-card');
-    rec.appendChild(el('h3', null, 'Set a new password'));
-    rec.appendChild(el('p', null, 'You arrived from a password-reset link. Choose a new password below — you stay signed in.'));
-    var recPass = el('input', 'field'); recPass.type = 'password'; recPass.placeholder = 'New password (min 6 characters)';
-    var recPass2 = el('input', 'field'); recPass2.type = 'password'; recPass2.placeholder = 'Repeat new password';
-    var recMsg = el('p', 'help-text'); recMsg.style.display = 'none';
+    var recWrap = el('div', 'auth-wrap');
+    var recBrand = el('div', 'auth-brand');
+    recBrand.innerHTML = '<div class="auth-logo">LUCKY <span>RACE</span></div>' +
+      '<div class="auth-name">Lucky Race Predictor</div>' +
+      '<p class="auth-sub">Smart picks from your saved races</p>';
+    recWrap.appendChild(recBrand);
+    var rec = el('div', 'auth-card');
+    rec.appendChild(el('h1', 'auth-title', 'Set a new password'));
+    rec.appendChild(el('p', 'auth-note', 'You arrived from a password-reset link. Choose a new password below — you stay signed in.'));
+    var recPassBlock = el('div', 'auth-field-block');
+    recPassBlock.appendChild(el('label', 'auth-label', 'New password'));
+    var recPassWrap = el('span', 'auth-field-wrap');
+    var recPass = el('input', 'auth-input'); recPass.type = 'password'; recPass.placeholder = '••••••••';
+    var recShow = el('button', 'auth-show', 'Show'); recShow.type = 'button';
+    recShow.addEventListener('click', function () {
+      var s = recPass.type === 'password';
+      recPass.type = s ? 'text' : 'password';
+      recShow.textContent = s ? 'Hide' : 'Show';
+    });
+    recPassWrap.appendChild(recPass); recPassWrap.appendChild(recShow);
+    recPassBlock.appendChild(recPassWrap);
+    rec.appendChild(recPassBlock);
+    var recPass2Block = el('div', 'auth-field-block');
+    recPass2Block.appendChild(el('label', 'auth-label', 'Repeat new password'));
+    var recPass2Wrap = el('span', 'auth-field-wrap');
+    var recPass2 = el('input', 'auth-input'); recPass2.type = 'password'; recPass2.placeholder = '••••••••';
+    var recShow2 = el('button', 'auth-show', 'Show'); recShow2.type = 'button';
+    recShow2.addEventListener('click', function () {
+      var s = recPass2.type === 'password';
+      recPass2.type = s ? 'text' : 'password';
+      recShow2.textContent = s ? 'Hide' : 'Show';
+    });
+    recPass2Wrap.appendChild(recPass2); recPass2Wrap.appendChild(recShow2);
+    recPass2Block.appendChild(recPass2Wrap);
+    rec.appendChild(recPass2Block);
+    var recMsg = el('p', 'auth-error'); recMsg.style.display = 'none';
+    rec.appendChild(recMsg);
     var recBtn = el('button', 'btn btn-yellow btn-block', 'Set new password');
     recBtn.addEventListener('click', async function () {
       if (!recPass.value || recPass.value.length < 6) { recMsg.textContent = 'Password must be at least 6 characters.'; recMsg.style.display = ''; return; }
@@ -2146,8 +2278,10 @@ function renderAccount() {
       toast('Password set. You are signed in.');
       await afterAuth();
     });
-    rec.appendChild(recPass); rec.appendChild(recPass2); rec.appendChild(recBtn); rec.appendChild(recMsg);
-    box.appendChild(rec);
+    rec.appendChild(recBtn);
+    recWrap.appendChild(rec);
+    recWrap.appendChild(el('p', 'auth-footer', 'Created by Taha Ahsan'));
+    box.appendChild(recWrap);
   }
 
   /* Owner profile: a distinct card at the top of the Account tab for the
