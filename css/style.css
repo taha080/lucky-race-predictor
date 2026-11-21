@@ -29,11 +29,12 @@ body {
 .hidden { display: none !important; }
 
 /* ---------- Header ---------- */
-.app-header { text-align: center; padding: 18px 16px 6px; }
+.app-header { text-align: center; padding: 18px 16px 12px; border-bottom: 1px solid rgba(255,255,255,.10); }
 .logo { font-size: 34px; font-weight: 900; letter-spacing: 2px; color: #fff;
   text-shadow: 0 2px 0 rgba(0,0,0,.35); font-style: italic; }
 .logo span { color: var(--yellow); }
 .logo-sub { letter-spacing: 6px; font-size: 13px; font-weight: 700; color: var(--muted); margin-top: -2px; }
+.logo-tag { font-size: 12px; color: var(--muted); margin-top: 8px; letter-spacing: 1px; }
 .demo-banner { margin-top: 12px; background: rgba(255, 210, 31, .14); border: 1px solid var(--yellow);
   color: var(--yellow); border-radius: 10px; padding: 8px 10px; font-size: 13px; line-height: 1.4; }
 
@@ -41,7 +42,7 @@ body {
 main { padding: 6px 14px 0; }
 .tab { display: none; }
 .tab.active { display: block; }
-.section-title { font-size: 17px; font-weight: 800; margin: 18px 0 10px; }
+.section-title { font-size: 17px; font-weight: 800; margin: 18px 0 10px; border-left: 4px solid var(--yellow); padding-left: 10px; }
 .sub-title { font-size: 15px; font-weight: 700; margin: 16px 0 8px; }
 .hint-note { font-size: 12px; font-weight: 400; color: var(--muted); }
 .help-text { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 4px 0 8px; }
@@ -63,36 +64,46 @@ main { padding: 6px 14px 0; }
 .timer-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.08);
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
 .timer-label { font-size: 14px; font-weight: 700; }
-.timer-display { font-size: 24px; font-weight: 900; color: var(--yellow); min-width: 56px; text-align: center; }
+.timer-display { font-size: 28px; font-weight: 900; color: var(--yellow); min-width: 56px; text-align: center; }
 .timer-display.low { color: var(--bad); }
 .timer-row .btn { margin-left: auto; }
 
 /* ---------- Vehicle grid ---------- */
 .vehicle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.vehicle-card { background: var(--card); color: var(--ink); border-radius: 14px; padding: 10px 6px 8px;
-  text-align: center; cursor: pointer; border: 3px solid transparent; min-height: 108px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
-.vehicle-card .v-name { font-size: 14px; font-weight: 800; line-height: 1.15; }
+.vehicle-card { background: var(--card); color: var(--ink); border-radius: 16px; padding: 12px 6px 10px;
+  text-align: center; cursor: pointer; border: 3px solid transparent; min-height: 158px;
+  position: relative; box-shadow: 0 2px 8px rgba(16,26,58,.14);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.vehicle-card .v-name { font-size: 15px; font-weight: 800; line-height: 1.15; }
 .vehicle-card .v-meta { font-size: 11px; color: #5a6b9a; font-weight: 600; }
-.vehicle-card.picked { border-color: var(--yellow); background: #fff7cc; box-shadow: 0 0 0 2px var(--yellow); }
+.vehicle-card.picked { border-color: var(--yellow); background: #fff7cc; box-shadow: 0 0 0 2px var(--yellow), 0 2px 10px rgba(16,26,58,.18); }
+.vehicle-card.picked::after { content: '\2713'; position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--yellow); color: #1a1400; font-size: 13px; font-weight: 900;
+  line-height: 22px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
 .vehicle-card.dim { opacity: .45; }
 .vehicle-card .v-rank { font-size: 11px; font-weight: 900; color: var(--purple); }
 
-/* CSS vehicle glyph (no external images — game art is copyrighted) */
-.glyph { position: relative; width: 66px; height: 36px; }
-.glyph .body { position: absolute; left: 4px; right: 4px; bottom: 9px; height: 14px;
-  background: var(--c, #888); border-radius: 7px; }
-.glyph .cab { position: absolute; left: 20px; top: 3px; width: 26px; height: 12px;
-  background: var(--c, #888); border-radius: 7px 9px 2px 2px; opacity: .8; }
-.glyph .w1, .glyph .w2 { position: absolute; bottom: 0; width: 14px; height: 14px;
-  background: #141414; border: 2px solid #666; border-radius: 50%; }
-.glyph .w1 { left: 9px; } .glyph .w2 { right: 9px; }
-.glyph.big .w1, .glyph.big .w2 { width: 19px; height: 19px; bottom: -2px; }
-.glyph.big .body { bottom: 12px; }
-.glyph.bike .body, .glyph.bike .cab { display: none; }
-.glyph.bike .bar { position: absolute; left: 14px; top: 8px; width: 38px; height: 5px;
-  background: var(--c, #888); border-radius: 3px; transform: rotate(-14deg); }
-.glyph.bike .w1 { left: 6px; } .glyph.bike .w2 { right: 6px; }
+/* Vehicle pictures — inline SVG illustrations (see glyphHtml in js/app.js).
+   Drawn in-code because game art is copyrighted; no external images. */
+.v-glyph { width: 112px; height: 60px; display: block; margin: 2px auto 4px;
+  filter: drop-shadow(0 3px 3px rgba(16,26,58,.18)); }
+.v-glyph .bd { stroke: rgba(0,0,0,.22); stroke-width: 1; }
+.v-glyph .glass { fill: #cfe8ff; }
+.v-glyph .shine { fill: rgba(255,255,255,.65); }
+.v-glyph .shadow { fill: rgba(0,0,0,.16); }
+.v-glyph .light { fill: #ffe9a8; stroke: rgba(0,0,0,.15); }
+.v-glyph .tail { fill: #ff5a5a; }
+.v-glyph .line { stroke: rgba(0,0,0,.18); stroke-width: 1.5; fill: none; }
+.v-glyph .rail { stroke: rgba(0,0,0,.30); stroke-width: 2.5; fill: none; stroke-linecap: round; }
+.v-glyph .rack { stroke: currentColor; stroke-width: 3; fill: none; stroke-linecap: round; }
+.v-glyph .tread { fill: none; stroke: #000; stroke-width: 4; stroke-dasharray: 3 3; opacity: .5; }
+.v-glyph .w { fill: #161616; stroke: #5b6470; stroke-width: 2; }
+.v-glyph .hub { fill: #9aa3b2; }
+
+/* Step numbers — the Predict flow reads step by step, 1 to 4. */
+.step-num { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border-radius: 50%; background: var(--yellow); color: #1a1400; font-size: 13px; font-weight: 900;
+  margin-right: 8px; vertical-align: middle; }
 
 /* ---------- Track buttons ---------- */
 .track-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -121,7 +132,7 @@ main { padding: 6px 14px 0; }
 .result-empty { color: #5a6b9a; font-size: 14px; text-align: center; padding: 8px 0; }
 .result-title { font-size: 15px; font-weight: 900; margin-bottom: 10px; color: var(--ink); }
 .result-card { border-radius: 12px; padding: 12px; margin-bottom: 10px; background: #f2f4ff; border: 2px solid transparent; }
-.result-card.rank-1 { border-color: var(--yellow); background: #fff7cc; }
+.result-card.rank-1 { border-color: var(--yellow); background: linear-gradient(180deg, #fff7cc, #ffef9e); }
 .result-label { font-size: 11px; font-weight: 900; letter-spacing: 1.5px; color: var(--purple); margin-bottom: 4px; }
 .result-card.main-pick { border-width: 3px; box-shadow: 0 0 0 2px var(--yellow); }
 .result-card.main-pick .result-name { font-size: 22px; }
@@ -219,7 +230,7 @@ table.data input { width: 56px; min-height: 40px; text-align: center; font-size:
   border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 .nav-btn { flex: 1; min-height: 60px; border: none; background: none; color: var(--muted);
   font-size: 13px; font-weight: 800; cursor: pointer; }
-.nav-btn.active { color: var(--yellow); }
+.nav-btn.active { color: var(--yellow); box-shadow: inset 0 3px 0 var(--yellow); }
 
 /* ---------- Toast ---------- */
 .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 100;
