@@ -160,32 +160,58 @@ function toast(msg) {
    PREDICTION ENGINE (pure functions — also unit-tested in Node, see bottom)
    ========================================================================== */
 
+/* Recency weighting for history: exponential decay over saved races.
+   The half-life (in races) is editable in js/config.js as
+   HISTORY_HALF_LIFE_RACES (default 50). Age is the race's index in the
+   newest-first list: 0 = newest race (weight 1.0), age == half-life
+   gives weight 0.5. Invalid or missing config falls back to 50. */
+function historyHalfLife() {
+  var h = CONFIG && CONFIG.HISTORY_HALF_LIFE_RACES;
+  if (typeof h === 'number' && isFinite(h) && h > 0) return h;
+  return 50;
+}
+function decayWeight(ageInRaces, halfLife) {
+  return Math.pow(0.5, ageInRaces / halfLife);
+}
+
 /* Historical frequency of a track type for a segment position (index 0, 1
    or 2), conditioned on the segments that ARE known (pinned).
    knownSegs = { segmentIndex: track } for pinned segments only.
    Falls back to all races for that position, then to equal probability
    (1/6) when there is no data. Saved races with 'unknown' at this position
-   are excluded from the counts — they carry no track information. */
+   are excluded from the counts — they carry no track information.
+   Counts are decay-weighted by recency (newest race weight 1.0, halving
+   every HISTORY_HALF_LIFE_RACES races), so recent races count more. */
 function historicalFreq(segIndex, knownSegs, raceList) {
   var dist = {};
   TRACKS.forEach(function (t) { dist[t] = 0; });
   knownSegs = knownSegs || {};
   var knownKeys = Object.keys(knownSegs);
-  var pool = raceList.filter(function (r) {
-    if (!r.tracks) return false;
-    return knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; });
+  var halfLife = historyHalfLife();
+  // Races matching the pinned segments, each carrying its decay weight
+  // from its index in the newest-first list (index 0 = newest).
+  var pool = [];
+  raceList.forEach(function (r, i) {
+    if (!r.tracks) return;
+    if (knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; })) {
+      pool.push({ race: r, weight: decayWeight(i, halfLife) });
+    }
   });
-  if (!pool.length) pool = raceList.filter(function (r) { return r.tracks; });
-  var knownCount = 0;
-  pool.forEach(function (r) {
-    var t = r.tracks[segIndex];
-    if (dist[t] !== undefined) { dist[t] += 1; knownCount += 1; }
+  if (!pool.length) {
+    raceList.forEach(function (r, i) {
+      if (r.tracks) pool.push({ race: r, weight: decayWeight(i, halfLife) });
+    });
+  }
+  var totalWeight = 0;
+  pool.forEach(function (entry) {
+    var t = entry.race.tracks[segIndex];
+    if (dist[t] !== undefined) { dist[t] += entry.weight; totalWeight += entry.weight; }
   });
-  if (!knownCount) {
+  if (!totalWeight) {
     TRACKS.forEach(function (t) { dist[t] = 1 / TRACKS.length; });
     return dist;
   }
-  TRACKS.forEach(function (t) { dist[t] = dist[t] / knownCount; });
+  TRACKS.forEach(function (t) { dist[t] = dist[t] / totalWeight; });
   return dist;
 }
 
@@ -264,19 +290,26 @@ function computePrediction(input) {
   if (N >= HISTORY_BLEND_MIN_TOTAL) {
     var setKey = vehicles.slice().sort().join('|');
     var knownKeys = Object.keys(knownSegs);
-    var matches = raceList.filter(function (r) {
-      return r.tracks && r.vehicles && r.vehicles.slice().sort().join('|') === setKey &&
-        knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; });
+    var matches = [];
+    raceList.forEach(function (r, i) {
+      if (r.tracks && r.vehicles && r.vehicles.slice().sort().join('|') === setKey &&
+          knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; })) {
+        matches.push({ race: r, weight: decayWeight(i, historyHalfLife()) });
+      }
     });
     if (matches.length >= HISTORY_BLEND_MIN_MATCHES) {
       var w = clamp((N - HISTORY_BLEND_MIN_TOTAL) / 350, 0, 0.5);
       var histCounts = {};
+      var histTotal = 0;
       vehicles.forEach(function (v) { histCounts[v] = 0; });
-      matches.forEach(function (r) {
-        if (histCounts[r.winner] !== undefined) histCounts[r.winner] += 1;
+      matches.forEach(function (m) {
+        if (histCounts[m.race.winner] !== undefined) {
+          histCounts[m.race.winner] += m.weight;
+          histTotal += m.weight;
+        }
       });
       vehicles.forEach(function (v) {
-        var hp = histCounts[v] / matches.length;
+        var hp = histTotal > 0 ? histCounts[v] / histTotal : 0;
         blended[v] = (1 - w) * probs[v] + w * hp;
       });
       histInfo = { matches: matches.length, weight: w, total: N };
@@ -1381,6 +1414,8 @@ if (typeof module !== 'undefined' && module.exports) {
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
     pinnedSegments: pinnedSegments,
+    decayWeight: decayWeight,
+    historyHalfLife: historyHalfLife,
     buildReason: buildReason
   };
 }
