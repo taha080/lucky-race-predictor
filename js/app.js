@@ -12,18 +12,15 @@
      weight each by P(t1) * P(t2) * P(t3), winner = lowest time
      (exact ties split the weight equally).
    - P(segment) comes from, in order:
-       (a) user-pinned track          -> 1.0 for that track
-       (b) user-hinted track + chance p (10/20/30/50/70/90%)
-                                        -> hinted track gets p, the rest
-                                           (1-p) is shared over the other 5
-                                           tracks by historical frequency
-       (c) historical frequency of that track for that segment position,
+       (a) user-pinned track          -> 1.0 for that track (the game showed
+                                        it, so it is a fact, not a guess —
+                                        there is no percentage choice)
+       (b) historical frequency of that track for that segment position,
            learned from saved races, conditioned on the segments that ARE
            known (pinned) — "unknown" entries in saved races are ignored
-       (d) equal probability (1/6) when there is no data at all
-     IMPORTANT: a hint is a LIKELIHOOD, never a certainty. Patterns change
-     every round — never assume a fixed daily pattern. The model relearns
-     from every newly saved race.
+       (c) equal probability (1/6) when there is no data at all
+     Patterns change every round — never assume a fixed daily pattern.
+     The model relearns from every newly saved race.
    - HISTORY BLEND: when 150+ races are saved, blend the speed model with
      the actual win rate for the same 3-vehicle set + the same known
      (pinned) segments.
@@ -31,9 +28,8 @@
      applied only if >= 5 saved races match that exact set + known segments.
        P_final = (1 - w) * P_model + w * P_hist
    - ONE-TRACK RULE: the game shows exactly ONE track before the bet, so
-     at most ONE segment may be pinned (Pin 100%). Pinning a second
-     segment unpins the first; the other two stay Unknown. Hints (a
-     likelihood, not a certainty) on unknown segments are still allowed.
+     at most ONE segment may be pinned (known). Pinning a second
+     segment unpins the first; the other two stay Unknown.
      The engine enforces this too: if the input somehow carries two or
      three pins, only the first (lowest index) is kept and the others are
      treated as Unknown.
@@ -128,7 +124,6 @@ function isDuplicateRace(candidate, raceList, ignoreId) {
   });
 }
 
-var CHANCE_OPTIONS = [100, 90, 70, 50, 30, 20, 10]; // 100 = pinned
 var HISTORY_BLEND_MIN_TOTAL = 150;   // start blending at 150 saved races
 var HISTORY_BLEND_MIN_MATCHES = 5;   // need >= 5 races of the same set + seg1
 
@@ -161,8 +156,9 @@ var speeds = cloneSpeeds(DEFAULT_SPEEDS);
 var pred = {           // Predict tab state
   vehicles: [],        // up to 3 names
   // All three segments behave the same: { mode, track, chance }.
-  // mode: unknown|hint|pin. Default is Unknown for every segment — never
-  // pre-select or auto-fill a track, including segment 1.
+  // mode: unknown|pin. Default is Unknown for every segment — never
+  // pre-select or auto-fill a track, including segment 1. Tapping a
+  // track pins it (known, 100%) — the game showed it, so it is a fact.
   // ONE-TRACK RULE: at most ONE segment may be pinned at a time (see
   // applySinglePin / oneTrackHints below) — the game shows only one
   // track before the bet.
@@ -813,60 +809,38 @@ function renderTrackRow(containerId, selected, onPick, includeUnknown) {
 }
 
 /* One renderer for all three Predict segment boxes (1, 2 and 3 behave the
-   same): tap a track to hint it (50% by default — change the chance or pin
-   it with the chips below), tap "? Unknown" to leave it unknown. */
+   same): tap a track to mark it KNOWN — the game shows exactly one track
+   before the bet, and a shown track is a fact, never a guess, so there is
+   no percentage choice at all. Tap "? Unknown" to leave it unknown.
+   Pinning one segment unpins any other (one-track rule). */
 function renderPredictSeg(segNum) {
   var state = pred['seg' + segNum];
   var rowId = 'seg' + segNum + 'Tracks';
-  var chanceId = 'seg' + segNum + 'Chance';
   renderTrackRow(rowId, state.mode === 'unknown' ? null : state.track, function (t) {
     if (t === null) {
       state.mode = 'unknown'; state.track = null;
     } else {
-      // Tapping a track makes it a hint at the default 50% chance.
-      // The user can change the chance (or pin it) with the chips below.
-      state.mode = 'hint'; state.track = t;
-      if (!state.chance) state.chance = 50;
+      state.mode = 'pin'; state.track = t; state.chance = 100;
+      // ONE-TRACK RULE: pinning this segment unpins any other pinned
+      // segment — re-render all three boxes so the change shows.
+      pinSegment(segNum);
     }
-    renderPredictSeg(segNum);
+    renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
     renderPrediction();
   }, true);
-
-  var chanceRow = $(chanceId);
-  chanceRow.innerHTML = '';
-  if (state.mode === 'hint' || state.mode === 'pin') {
-    chanceRow.classList.remove('hidden');
-    chanceRow.appendChild(el('div', 'chance-label',
-      'How likely is ' + state.track + ' on segment ' + segNum + '? (a hint is a likelihood, never a certainty)'));
-    CHANCE_OPTIONS.forEach(function (c) {
-      var isSel = (c === 100 && state.mode === 'pin') || (c !== 100 && state.mode === 'hint' && state.chance === c);
-      var chip = el('button', 'chance-chip' + (isSel ? ' selected' : ''), c === 100 ? 'Pin 100%' : c + '%');
-      chip.addEventListener('click', function () {
-        if (c === 100) {
-          state.mode = 'pin';
-          // ONE-TRACK RULE: pinning this segment unpins any other pinned
-          // segment — re-render all three boxes so the change shows.
-          pinSegment(segNum);
-          renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
-        } else {
-          state.mode = 'hint'; state.chance = c;
-          renderPredictSeg(segNum);
-        }
-        renderPrediction();
-      });
-      chanceRow.appendChild(chip);
-    });
-  } else {
-    chanceRow.classList.add('hidden');
-  }
 }
 
-/* One-tap reset: all three segment boxes back to Unknown. */
-function resetSegments() {
+/* One-tap reset: vehicles, odds and all three segment boxes cleared, so
+   the next bet starts from a clean slate — no manual unselecting. */
+function resetPrediction() {
+  pred.vehicles = [];
+  pred.odds = {};
   [1, 2, 3].forEach(function (n) {
     pred['seg' + n] = { mode: 'unknown', track: null, chance: 50 };
     renderPredictSeg(n);
   });
+  renderPredictVehicles();
+  renderOddsBox();
   renderPrediction();
 }
 
@@ -1917,7 +1891,7 @@ function init() {
   renderTimer();
 
   $('timerBtn').addEventListener('click', startTimer);
-  $('resetSegsBtn').addEventListener('click', resetSegments);
+  $('resetSegsBtn').addEventListener('click', resetPrediction);
   $('saveRaceBtn').addEventListener('click', saveRace);
   $('cancelEditBtn').addEventListener('click', function () { resetLogForm(); });
   $('logHowText').addEventListener('input', function (e) { logForm.howWonText = e.target.value; });
