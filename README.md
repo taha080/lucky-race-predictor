@@ -73,30 +73,33 @@ speed table live in `localStorage` and predictions work with no account.
 
 **Vehicle name aliases (CSV import).** CSV rows may use `motor` for Motorcycle and `normal` for Car (case-insensitive); they are converted to the full vehicle names on import. Full names still import unchanged. No vehicle is dropped or renamed — the Log tab uses tap-to-select cards with the full names.
 
+**Track name aliases (CSV import).** CSV rows may use `petrol` or `pathole` for Potholes (case-insensitive; `pathole` is the user's spelling); they are converted to Potholes on import. Full track names still import unchanged. No track is dropped or renamed — the Predict tab's track chips already use the full names.
+
 ## How the prediction works
 
 1. **Time model.** A race has 3 segments of *unequal* length. A vehicle's time
    on a track assignment `(t1, t2, t3)` is
    `L1/speed[v][t1] + L2/speed[v][t2] + L3/speed[v][t3]`,
    where `L1, L2, L3` are the segment length weights (default
-   `[0.157, 0.557, 0.286]`, editable in `js/config.js` as
+   `[0.189, 0.511, 0.300]`, editable in `js/config.js` as
    `SEGMENT_LENGTHS`; a missing or invalid value falls back to equal
    thirds). The lowest time wins that assignment (exact ties split the
    weight).
 
-   The weights come from the 7 full-track races 21–27, whose notes give
+   The weights come from the 9 full-track races 21–29, whose notes give
    the share of the race each track covered: race 21 seg1 10%, rest Bumpy;
    race 22 seg1 10%, rest Expressway; race 23 90% Bumpy, seg3 10%; race 24
    5% Desert, 60–70% Dirt, rest Expressway; race 25 5% Bumpy, 80%
    Expressway, last bit Dirt; race 26 seg1 20%, rest Expressway; race 27
-   10–20% Bumpy, mid Expressway, end a little Potholes. Where a note
-   splits only one segment from "the rest", the remainder is split
-   equally between the two unmeasured positions; ranges use their
-   midpoint (60–70% → 65%, 10–20% → 15%) and "last bit" / "a little"
-   count as 15%. Averaging the 7 races gives seg1 1.10/7 ≈ 0.157, seg2
-   3.90/7 ≈ 0.557, seg3 2.00/7 ≈ 0.286 — the middle segment is by far
-   the longest. As more full-track races are saved, re-average and update
-   `SEGMENT_LENGTHS` to refine the model.
+   10–20% Bumpy, mid Expressway, end a little Potholes; race 28 40% Dirt,
+   10% Bumpy, rest Highway; race 29 ~20% Potholes, 60% Highway, end 20%
+   Bumpy. Where a note splits only one segment from "the rest", the
+   remainder is split equally between the two unmeasured positions;
+   ranges use their midpoint (60–70% → 65%, 10–20% → 15%) and "last bit"
+   / "a little" count as 15%. Averaging the 9 races gives seg1 1.70/9 ≈
+   0.189, seg2 4.60/9 ≈ 0.511, seg3 2.70/9 = 0.300 — the middle segment
+   is by far the longest. As more full-track races are saved, re-average
+   and update `SEGMENT_LENGTHS` to refine the model.
 2. **Unknown segments.** Any segment can be Unknown — the shown segment
    may be in any position (first, second or third), or no segment may be
    shown at all. All track combinations (up to 6×6×6 = 216) are
@@ -136,7 +139,9 @@ speed table live in `localStorage` and predictions work with no account.
    counts.
 5. **Output.** Always the **top 2 of the 3** vehicles, each with a
    confidence % (its win probability) and a short reason (e.g. fastest on
-   Desert, strong on likely hidden tracks).
+   Desert, strong on likely hidden tracks). The #1 vehicle is shown as
+   the big highlighted **MAIN PICK**, and #2 below it as the smaller
+   **BACKUP PICK**.
 
 ## Subscriptions
 
