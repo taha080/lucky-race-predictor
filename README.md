@@ -143,6 +143,20 @@ speed table live in `localStorage` and predictions work with no account.
    the big highlighted **MAIN PICK**, and #2 below it as the smaller
    **BACKUP PICK**.
 
+### One-track rule
+
+The game shows exactly **one** track before you bet — all three tracks
+appear only in the result after the race ends. So the Predict tab allows
+only **one pinned segment** at a time: pinning a second segment unpins
+the first, and the other two segments stay Unknown. Hints (a rough
+chance, not a certainty) still work on any segment, and the unknown
+segments are predicted from history frequency conditioned on the one
+pinned segment. The engine enforces the same rule: if a prediction input
+somehow carries two or three pins, only the first (lowest index) is kept
+and the others are treated as Unknown. The Log Race tab is unchanged —
+after the result you still enter all 3 tracks there, so the learning data
+keeps growing.
+
 ## Subscriptions (Premium)
 
 - Users sign up with email + password (Supabase Auth).
