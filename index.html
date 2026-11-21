@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a1e5e">
+<title>Lucky Race Predictor</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+<div id="app">
+  <header class="app-header">
+    <div class="logo">LUCKY <span>RACE</span></div>
+    <div class="logo-sub">PREDICTOR</div>
+    <div id="demoBanner" class="demo-banner hidden">Demo mode — connect Supabase to enable accounts &amp; subscriptions. Predictions work locally.</div>
+  </header>
+
+  <main>
+    <!-- ============ PREDICT ============ -->
+    <section id="tab-predict" class="tab active">
+      <div class="timer-row">
+        <span class="timer-label">Betting timer</span>
+        <span id="timerDisplay" class="timer-display">35s</span>
+        <button id="timerBtn" class="btn btn-yellow btn-small">Start 35s timer</button>
+      </div>
+
+      <h2 class="section-title">Pick 3 vehicles <span id="pickCount" class="pick-count">0/3</span></h2>
+      <div id="predictVehicles" class="vehicle-grid"></div>
+
+      <h2 class="section-title">Segment 1 — visible track</h2>
+      <div id="seg1Tracks" class="track-row"></div>
+
+      <h2 class="section-title">Segment 2 — hidden <span class="hint-note">(tap a track as a hint, or leave Unknown)</span></h2>
+      <div id="seg2Tracks" class="track-row"></div>
+      <div id="seg2Chance" class="chance-row hidden"></div>
+
+      <h2 class="section-title">Segment 3 — hidden <span class="hint-note">(tap a track as a hint, or leave Unknown)</span></h2>
+      <div id="seg3Tracks" class="track-row"></div>
+      <div id="seg3Chance" class="chance-row hidden"></div>
+
+      <div id="oddsBox" class="odds-box hidden">
+        <h2 class="section-title">Odds on each card <span class="hint-note">(optional — tap − / +)</span></h2>
+        <div id="oddsRows"></div>
+      </div>
+
+      <div id="resultPanel" class="result-panel">
+        <p class="result-empty">Pick 3 vehicles and the first track to see the prediction.</p>
+      </div>
+      <p id="assumedLine" class="assumed-line"></p>
+    </section>
+
+    <!-- ============ LOG RACE ============ -->
+    <section id="tab-log" class="tab">
+      <h2 class="section-title">Log a race</h2>
+      <p class="help-text">Tap to fill everything — no typing needed except "Other". The model learns from every race you save.</p>
+
+      <h3 class="sub-title">Vehicles in race <span id="logPickCount" class="pick-count">0/3</span></h3>
+      <div id="logVehicles" class="vehicle-grid"></div>
+
+      <h3 class="sub-title">Segment 1 track</h3>
+      <div id="logSeg1" class="track-row"></div>
+      <h3 class="sub-title">Segment 2 track</h3>
+      <div id="logSeg2" class="track-row"></div>
+      <h3 class="sub-title">Segment 3 track</h3>
+      <div id="logSeg3" class="track-row"></div>
+
+      <h3 class="sub-title">Patterns showing on screen</h3>
+      <div id="logPatterns" class="track-row"></div>
+
+      <h3 class="sub-title">Winner</h3>
+      <div id="logWinner" class="winner-row"><p class="help-text">Pick 3 vehicles first.</p></div>
+
+      <h3 class="sub-title">How it won</h3>
+      <div id="logHowWon" class="track-row"></div>
+      <input id="logHowText" class="text-input hidden" type="text" placeholder="Describe how it won (Other)..." maxlength="120">
+
+      <h3 class="sub-title">Odds <span class="hint-note">(optional)</span></h3>
+      <div id="logOdds"></div>
+
+      <button id="saveRaceBtn" class="btn btn-yellow btn-block">Save race</button>
+      <button id="cancelEditBtn" class="btn btn-ghost btn-block hidden">Cancel edit</button>
+
+      <h2 class="section-title">Saved races <span id="raceCount" class="pick-count"></span></h2>
+      <div id="raceList" class="race-list"></div>
+    </section>
+
+    <!-- ============ STATS ============ -->
+    <section id="tab-stats" class="tab">
+      <h2 class="section-title">Stats</h2>
+      <div class="stats-actions">
+        <button id="exportCsvBtn" class="btn btn-yellow">Export CSV</button>
+        <label class="btn btn-ghost file-label">Import CSV
+          <input id="importCsvInput" type="file" accept=".csv,text/csv" class="hidden-file">
+        </label>
+      </div>
+      <div id="statsSummary" class="stats-summary"></div>
+      <h3 class="sub-title">Win rate per vehicle</h3>
+      <div id="statsVehicles"></div>
+      <h3 class="sub-title">Win rate per vehicle per track</h3>
+      <p class="help-text">A race counts for a track if that track appeared in any of its 3 segments.</p>
+      <div id="statsPerTrack" class="table-scroll"></div>
+      <h3 class="sub-title">Track frequency per segment</h3>
+      <div id="statsFreq"></div>
+    </section>
+
+    <!-- ============ SPEED TABLE ============ -->
+    <section id="tab-speeds" class="tab">
+      <h2 class="section-title">Speed table</h2>
+      <p class="help-text">Every value is editable. Save to apply to predictions immediately. Reset restores the game defaults.</p>
+      <div id="speedTable" class="table-scroll"></div>
+      <div class="speed-actions">
+        <button id="saveSpeedsBtn" class="btn btn-yellow">Save speeds</button>
+        <button id="resetSpeedsBtn" class="btn btn-ghost">Reset to defaults</button>
+      </div>
+    </section>
+
+    <!-- ============ ACCOUNT ============ -->
+    <section id="tab-account" class="tab">
+      <h2 class="section-title">Account &amp; subscription</h2>
+      <div id="accountContent"></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="predict">Predict</button>
+    <button class="nav-btn" data-tab="log">Log Race</button>
+    <button class="nav-btn" data-tab="stats">Stats</button>
+    <button class="nav-btn" data-tab="speeds">Speeds</button>
+    <button class="nav-btn" data-tab="account">Account</button>
+  </nav>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
