@@ -290,6 +290,15 @@ function segmentLengths() {
   return [1 / 3, 1 / 3, 1 / 3];
 }
 
+/* Odds blend weight: how much the game's odds move the prediction %
+   (editable in js/config.js as ODDS_BLEND_WEIGHT, default 0.5).
+   Invalid or missing config falls back to 0.5; 0 = odds ignored. */
+function oddsBlendWeight() {
+  var w = CONFIG && CONFIG.ODDS_BLEND_WEIGHT;
+  if (typeof w === 'number' && isFinite(w) && w >= 0 && w <= 1) return w;
+  return 0.5;
+}
+
 /* Historical frequency of a track type for a segment position (index 0, 1
    or 2), conditioned on the segments that ARE known (pinned).
    knownSegs = { segmentIndex: track } for pinned segments only.
@@ -469,11 +478,37 @@ function computePrediction(input) {
     }
   }
 
+  // Odds blend: the game's odds imply a chance per vehicle —
+  // (1 / odds), normalised across the picked vehicles. Higher odds
+  // mean the game thinks the vehicle is LESS likely to win, so its
+  // implied chance is lower. Blended (ODDS_BLEND_WEIGHT, default
+  // 50/50) with the track+speed+history probability, so changing the
+  // odds on the Predict tab moves the shown % live — and can flip
+  // MAIN / BACKUP. Only when all 3 vehicles have sane odds (> 0,
+  // finite); otherwise the odds are ignored and nothing changes.
+  var final = {};
+  vehicles.forEach(function (v) { final[v] = blended[v]; });
+  var oddsInfo = null;
+  var oddsMap = input.odds || {};
+  var ow = oddsBlendWeight();
+  if (ow > 0 && vehicles.every(function (v) {
+    return typeof oddsMap[v] === 'number' && isFinite(oddsMap[v]) && oddsMap[v] > 0;
+  })) {
+    var invSum = 0;
+    vehicles.forEach(function (v) { invSum += 1 / oddsMap[v]; });
+    var implied = {};
+    vehicles.forEach(function (v) { implied[v] = (1 / oddsMap[v]) / invSum; });
+    vehicles.forEach(function (v) {
+      final[v] = (1 - ow) * blended[v] + ow * implied[v];
+    });
+    oddsInfo = { weight: ow, implied: implied };
+  }
+
   var ranked = vehicles.map(function (v) {
-    return { vehicle: v, prob: blended[v], modelProb: probs[v] };
+    return { vehicle: v, prob: final[v], modelProb: probs[v], oddsProb: oddsInfo ? oddsInfo.implied[v] : null };
   }).sort(function (a, b) { return b.prob - a.prob; });
 
-  return { ranked: ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: histInfo };
+  return { ranked: ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: histInfo, oddsInfo: oddsInfo };
 }
 
 /* Short human reason for a pick, given the distributions used.
@@ -1083,7 +1118,8 @@ function renderPrediction() {
     seg2Hint: pred.seg2,
     seg3Hint: pred.seg3,
     speeds: speeds,
-    races: races
+    races: races,
+    odds: pred.odds
   });
   var t1 = (typeof performance !== 'undefined') ? performance.now() : 0;
   var ms = Math.max(0, Math.round(t1 - t0));
@@ -1118,6 +1154,7 @@ function renderPrediction() {
   html += '<div class="result-foot">3rd: ' + third.vehicle + ' — ' + Math.min(99, Math.round(third.prob * 100)) + '%' +
     (result.histInfo ? ' · blended with history (' + result.histInfo.matches + ' matching races, weight ' +
       Math.round(result.histInfo.weight * 100) + '%)' : '') +
+    (result.oddsInfo ? ' · odds blended (' + Math.round(result.oddsInfo.weight * 100) + '%)' : '') +
     ' · computed in ' + ms + ' ms</div>';
   panel.innerHTML = html;
 
@@ -2091,6 +2128,7 @@ if (typeof module !== 'undefined' && module.exports) {
     oneTrackHints: oneTrackHints,
     decayWeight: decayWeight,
     historyHalfLife: historyHalfLife,
+    oddsBlendWeight: oddsBlendWeight,
     segmentLengths: segmentLengths,
     resolveVehicleName: resolveVehicleName,
     resolveTrackName: resolveTrackName,
