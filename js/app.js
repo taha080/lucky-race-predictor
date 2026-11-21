@@ -76,6 +76,28 @@ function normalizeTracksForSave(tracks) {
   return (tracks || []).map(function (t) { return t || UNKNOWN_TRACK; });
 }
 
+/* Duplicate rule: a race is a duplicate of a saved race when it has the
+   same 3 vehicles (order-insensitive), the same tracks (exact, including
+   'unknown' entries), the same winner, AND the same how_won_text.
+   A different note or a different winner makes it a different race.
+   `ignoreId` skips one race id (used when editing, so the race being
+   edited never counts as a duplicate of itself). */
+function isDuplicateRace(candidate, raceList, ignoreId) {
+  if (!candidate || !Array.isArray(candidate.vehicles) || !Array.isArray(candidate.tracks)) return false;
+  var candVehicles = candidate.vehicles.slice().sort().join('|');
+  var candTracks = normalizeTracksForSave(candidate.tracks).join('|');
+  var candWinner = candidate.winner || '';
+  var candNote = (candidate.how_won_text || '').trim();
+  return (raceList || []).some(function (r) {
+    if (ignoreId !== undefined && ignoreId !== null && String(r.id) === String(ignoreId)) return false;
+    if (!Array.isArray(r.vehicles) || !Array.isArray(r.tracks)) return false;
+    return r.vehicles.slice().sort().join('|') === candVehicles &&
+      normalizeTracksForSave(r.tracks).join('|') === candTracks &&
+      (r.winner || '') === candWinner &&
+      (r.how_won_text || '').trim() === candNote;
+  });
+}
+
 var CHANCE_OPTIONS = [100, 90, 70, 50, 30, 20, 10]; // 100 = pinned
 var HISTORY_BLEND_MIN_TOTAL = 150;   // start blending at 150 saved races
 var HISTORY_BLEND_MIN_MATCHES = 5;   // need >= 5 races of the same set + seg1
@@ -914,11 +936,13 @@ async function saveRace() {
   };
 
   if (logForm.editId) {
+    if (isDuplicateRace(race, races, logForm.editId)) { toast('This race is already saved.'); return; }
     var idx = races.findIndex(function (r) { return String(r.id) === String(logForm.editId); });
     if (idx !== -1) races[idx] = race;
     await cloudUpdateRace(race);
     toast('Race updated.');
   } else {
+    if (isDuplicateRace(race, races)) { toast('This race is already saved.'); return; }
     var saved = await cloudInsertRace(race);
     if (saved) { race.id = saved.id; race.created_at = saved.created_at || race.created_at; }
     races.unshift(race);
@@ -1159,6 +1183,11 @@ async function importCsv(file) {
       odds: {},
       created_at: (c[idx.created_at] || '').trim() || new Date().toISOString()
     };
+    // Duplicate rows are skipped and counted, like invalid rows — a race
+    // already in the dataset is never added twice (also catches a
+    // duplicate row earlier in the same file, since `races` grows as
+    // rows are imported).
+    if (isDuplicateRace(race, races)) { skipped += 1; continue; }
     try { race.odds = JSON.parse(c[idx.odds] || '{}'); } catch (e) { race.odds = {}; }
     var saved = await cloudInsertRace(race);
     if (saved) { race.id = saved.id; race.created_at = saved.created_at || race.created_at; }
@@ -1409,6 +1438,7 @@ if (typeof module !== 'undefined' && module.exports) {
     DEFAULT_SPEEDS: DEFAULT_SPEEDS,
     UNKNOWN_TRACK: UNKNOWN_TRACK,
     normalizeTracksForSave: normalizeTracksForSave,
+    isDuplicateRace: isDuplicateRace,
     isValidRaceTracks: isValidRaceTracks,
     computePrediction: computePrediction,
     segmentDistribution: segmentDistribution,
