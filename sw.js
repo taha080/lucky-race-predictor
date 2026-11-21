@@ -3,7 +3,7 @@
 // Pages (navigation) are network-first so new deploys show immediately;
 // same-origin static assets are cache-first. Supabase / CDN traffic is
 // never cached here.
-const CACHE = 'lrp-v1';
+const CACHE = 'lrp-v2'; // bump on every deploy that changes cached assets, so phones drop the old app.js
 const ASSETS = [
   '.',
   'index.html',
