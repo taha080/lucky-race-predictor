@@ -3,7 +3,7 @@
 // is (1 / odds), normalised across the 3 picked vehicles — higher odds
 // mean the game thinks the vehicle is LESS likely to win. The final %
 // is (1 - ODDS_BLEND_WEIGHT) * track+speed+history % + ODDS_BLEND_WEIGHT
-// * odds-implied % (default weight 0.5, see js/config.js).
+// * odds-implied % (default weight 0.1, see js/config.js).
 // Run from the repo root:
 //   node scripts/test-odds-blend.js
 // Exit code 0 = all pass, 1 = any failure.
@@ -55,18 +55,19 @@ var withOdds = app.computePrediction(Object.assign(baseInput(), {
 check('odds: probs sum to 1', approx(sumProbs(withOdds), 1, 1e-6));
 check('odds: Car % rises vs baseline', probOf(withOdds, 'Car') > probOf(base, 'Car'));
 check('odds: ORV % falls vs baseline', probOf(withOdds, 'ORV') < probOf(base, 'ORV'));
-check('odds: oddsInfo weight is 0.5', withOdds.oddsInfo && withOdds.oddsInfo.weight === 0.5);
+check('odds: oddsInfo weight is 0.1', withOdds.oddsInfo && withOdds.oddsInfo.weight === 0.1);
 check('odds: implied Car (1/2 normalised) beats ORV (1/5)',
   withOdds.oddsInfo.implied['Car'] > withOdds.oddsInfo.implied['ORV']);
 var carRow = withOdds.ranked.filter(function (x) { return x.vehicle === 'Car'; })[0];
 check('odds: oddsProb recorded on ranked rows', carRow && typeof carRow.oddsProb === 'number' && carRow.oddsProb > 0);
 
-// --- strong odds flip MAIN / BACKUP ---
-var flip = app.computePrediction(Object.assign(baseInput(), {
+// --- strong odds only nudge the % (weight 0.1): MAIN never flips on odds ---
+var nudge = app.computePrediction(Object.assign(baseInput(), {
   odds: { 'ORV': 8.0, 'Car': 1.2, 'SUV': 8.0 }
 }));
-check('odds: strong Car odds flip MAIN to Car', flip.ranked[0].vehicle === 'Car');
-check('odds: flipped probs still sum to 1', approx(sumProbs(flip), 1, 1e-6));
+check('odds: strong Car odds do NOT flip MAIN (ORV stays first)', nudge.ranked[0].vehicle === 'ORV');
+check('odds: nudged probs still sum to 1', approx(sumProbs(nudge), 1, 1e-6));
+check('odds: strong Car odds still raise Car % a little', probOf(nudge, 'Car') > probOf(base, 'Car'));
 
 // --- changing odds moves the % (the live-update the user asked for) ---
 var oddsA = app.computePrediction(Object.assign(baseInput(), {

@@ -76,13 +76,13 @@ check('(b) no vehicle is 0%', minProb(caseB) > 0.15);
 // is therefore tested directly on the exported guard helper, with the
 // realistic blended values for a known [Desert, Highway, Expressway]
 // combo with odds (Car is fastest on that combo, so model [0,1,0]
-// blended 50/50 with the odds-implied chance), computed exactly here
+// blended 90/10 with the odds-implied chance), computed exactly here
 // from the odds — no hand-rounded numbers.
 var invSum = 1 / 4.1 + 1 / 3.7 + 1 / 3.0;
 var guardC = {
-  'ATV': 0.5 * (1 / 4.1) / invSum,
-  'Car': 0.5 + 0.5 * (1 / 3.7) / invSum,
-  'Monster Truck': 0.5 * (1 / 3.0) / invSum
+  'ATV': 0.1 * (1 / 4.1) / invSum,
+  'Car': 0.9 + 0.1 * (1 / 3.7) / invSum,
+  'Monster Truck': 0.1 * (1 / 3.0) / invSum
 };
 var guardCBefore = { 'ATV': guardC['ATV'], 'Car': guardC['Car'], 'Monster Truck': guardC['Monster Truck'] };
 app.applyConfidenceGuard(guardC, 0);
@@ -125,7 +125,7 @@ console.log('  (c0) guard(0 unknown, degenerate): ' + Object.keys(guardC0).map(f
 check('(c0) no-odds all-known max is exactly the 95% cap', Math.max(guardC0['ATV'], guardC0['Car'], guardC0['Monster Truck']) <= 0.95);
 check('(c0) no-odds all-known min stays at the 2% floor', Math.min(guardC0['ATV'], guardC0['Car'], guardC0['Monster Truck']) >= 0.02);
 
-// --- (d) odds still move the % live and can flip MAIN / BACKUP ---
+// --- (d) odds still move the % live a little, but never flip MAIN / BACKUP ---
 function caseDInput(odds) {
   return {
     vehicles: ['ATV', 'Car', 'Monster Truck'],
@@ -149,8 +149,8 @@ check('(d) probs sum to 1 (equal odds)', approx(sumProbs(dEqual), 1, 1e-6));
 check('(d) probs sum to 1 (Car-favoured odds)', approx(sumProbs(dCarFavoured), 1, 1e-6));
 check('(d) favouring Car odds raises Car %', probOf(dCarFavoured, 'Car') > probOf(dEqual, 'Car'));
 check('(d) favouring Car odds lowers ATV %', probOf(dCarFavoured, 'ATV') < probOf(dEqual, 'ATV'));
-check('(d) strong Car odds flip MAIN to Car', dCarFavoured.ranked[0].vehicle === 'Car');
-check('(d) flipped probs still respect the 90% cap', maxProb(dCarFavoured) <= 0.90);
+check('(d) strong Car odds do NOT flip MAIN (ATV stays first)', dCarFavoured.ranked[0].vehicle === 'ATV');
+check('(d) nudged probs still respect the 90% cap', maxProb(dCarFavoured) <= 0.90);
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
