@@ -20,6 +20,14 @@ var LRP_CONFIG = {
   // history blend and to the Unknown-box track probabilities.
   HISTORY_HALF_LIFE_RACES: 50,
 
+  // Segment length weights: how much of a race each segment covers.
+  // Derived from full-track races 21-27 (see README): the first segment
+  // is short (~16%), the middle segment is the longest (~56%), the last
+  // ~29%. Edit to refine as more full-track races are saved; the three
+  // values are normalised to sum to 1. A missing/invalid value falls
+  // back to equal thirds [1/3, 1/3, 1/3].
+  SEGMENT_LENGTHS: [0.157, 0.557, 0.286],
+
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.
   // NOTE: for the admin panel's database reads/writes to work, the admin
