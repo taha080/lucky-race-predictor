@@ -71,12 +71,32 @@ speed table live in `localStorage` and predictions work with no account.
 
 **Duplicate protection.** A race is never added twice: a new race is a duplicate when a saved race already has the same 3 vehicles (in any order), the same 3 tracks (exact, including `"unknown"` entries), the same winner, and the same note (`how_won_text`). A different note or a different winner makes it a different race. The check runs when saving from the Log tab (a duplicate shows "This race is already saved." and is not stored) and when importing a CSV (duplicate rows are skipped and counted in the import toast). Editing a race never flags the race itself as a duplicate.
 
+**Vehicle name aliases (CSV import).** CSV rows may use `motor` for Motorcycle and `normal` for Car (case-insensitive); they are converted to the full vehicle names on import. Full names still import unchanged. No vehicle is dropped or renamed — the Log tab uses tap-to-select cards with the full names.
+
 ## How the prediction works
 
-1. **Time model.** A race has 3 segments of equal length. A vehicle's time
+1. **Time model.** A race has 3 segments of *unequal* length. A vehicle's time
    on a track assignment `(t1, t2, t3)` is
-   `1/speed[v][t1] + 1/speed[v][t2] + 1/speed[v][t3]`.
-   The lowest time wins that assignment (exact ties split the weight).
+   `L1/speed[v][t1] + L2/speed[v][t2] + L3/speed[v][t3]`,
+   where `L1, L2, L3` are the segment length weights (default
+   `[0.157, 0.557, 0.286]`, editable in `js/config.js` as
+   `SEGMENT_LENGTHS`; a missing or invalid value falls back to equal
+   thirds). The lowest time wins that assignment (exact ties split the
+   weight).
+
+   The weights come from the 7 full-track races 21–27, whose notes give
+   the share of the race each track covered: race 21 seg1 10%, rest Bumpy;
+   race 22 seg1 10%, rest Expressway; race 23 90% Bumpy, seg3 10%; race 24
+   5% Desert, 60–70% Dirt, rest Expressway; race 25 5% Bumpy, 80%
+   Expressway, last bit Dirt; race 26 seg1 20%, rest Expressway; race 27
+   10–20% Bumpy, mid Expressway, end a little Potholes. Where a note
+   splits only one segment from "the rest", the remainder is split
+   equally between the two unmeasured positions; ranges use their
+   midpoint (60–70% → 65%, 10–20% → 15%) and "last bit" / "a little"
+   count as 15%. Averaging the 7 races gives seg1 1.10/7 ≈ 0.157, seg2
+   3.90/7 ≈ 0.557, seg3 2.00/7 ≈ 0.286 — the middle segment is by far
+   the longest. As more full-track races are saved, re-average and update
+   `SEGMENT_LENGTHS` to refine the model.
 2. **Unknown segments.** Any segment can be Unknown — the shown segment
    may be in any position (first, second or third), or no segment may be
    shown at all. All track combinations (up to 6×6×6 = 216) are
