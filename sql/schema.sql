@@ -6,19 +6,9 @@
 -- No service_role key is needed by the app; everything runs as the user.
 -- ============================================================================
 
--- ---------- Helper: is this user an admin? ---------------------------------
--- SECURITY DEFINER so RLS policies can call it without recursion.
-create or replace function public.is_admin(uid uuid)
-returns boolean
-language sql
-security definer
-stable
-as $$
-  select exists (
-    select 1 from public.profiles p
-    where p.id = uid and p.is_admin = true
-  );
-$$;
+-- NOTE: the profiles table MUST be created before is_admin() — Postgres
+-- validates the function body at creation time, and is_admin() reads
+-- public.profiles (running the function first fails with 42P01).
 
 -- ---------- profiles --------------------------------------------------------
 create table if not exists public.profiles (
@@ -49,6 +39,20 @@ create policy "profiles_update_own"
   to authenticated
   using (id = auth.uid())
   with check (id = auth.uid());
+
+-- ---------- Helper: is this user an admin? ---------------------------------
+-- SECURITY DEFINER so RLS policies can call it without recursion.
+create or replace function public.is_admin(uid uuid)
+returns boolean
+language sql
+security definer
+stable
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = uid and p.is_admin = true
+  );
+$$;
 
 -- Auto-create a profile row when a user signs up.
 create or replace function public.handle_new_user()
@@ -110,7 +114,9 @@ create table if not exists public.races (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles (id) on delete cascade,
   vehicles jsonb not null,          -- ["ORV", "SUV", "Monster Truck"]
-  tracks jsonb not null,            -- ["Desert", "Bumpy", "Dirt"] (segments 1-3)
+  tracks jsonb not null,            -- ["Desert", "Bumpy", "Dirt"] (segments 1-3);
+                                    -- any entry may be "unknown" when that
+                                    -- segment's track was not shown/known
   patterns jsonb not null default '[]'::jsonb, -- hinted track types shown on screen
   winner text not null,
   how_won text,
