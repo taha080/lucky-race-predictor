@@ -169,14 +169,43 @@ keeps growing.
   subscription automatically expires at the end of the calendar month**
   (the app checks `expires_at < now` on each use).
 - **Owner (admin) access is permanent:** admins (email in `js/config.js`
-  `ADMIN_EMAILS` **and** `profiles.is_admin = true` in the database)
+  `ADMIN_EMAILS` **or** `profiles.is_admin = true` in the database)
   bypass every subscription check entirely — the owner never needs a
   subscription and no expiry is checked for admins. The Account tab shows
   a distinct **Owner** card (email + OWNER badge) at the top for admins.
 - **Admins** can grant premium to any user from their own account (sets
   `expires_at` to the end of the current month) or revoke it, from the
   Account tab's "Grant premium" users list. Revoking blocks the whole app
-  for that user immediately.
+  for that user immediately. The admin panel also has a **Find user**
+  search (exact email **or** username) and shows the total number of
+  registered users.
+- **Usernames (optional):** a user can pick a username (3-20 letters,
+  numbers or `_`, unique ignoring case) at sign-up or later from the
+  Account tab. The owner can grant premium by username or by email.
+- **Passwords:** a signed-in user can set/change their password from the
+  Account tab ("Change password"). A logged-out user can use "Forgot
+  password?" on the sign-in form — a reset link is emailed, and clicking
+  it opens a "Set a new password" form in the app. Expired or already-used
+  links show a clear message instead of silently failing.
+- **No limit on accounts:** anyone can create an account, unlimited.
+  (Supabase's free email service sends at most 2 account emails per hour
+  — that limit is on *emails*, not on accounts. If confirmation/reset
+  emails stop arriving, wait for the next hour, or set up a custom SMTP
+  provider in the Supabase dashboard: Authentication → Emails → Enable
+  custom SMTP.)
+
+## Security
+
+See `SECURITY_AUDIT_2026-11-21.md` for the full audit (21 Nov 2026):
+profiles RLS is hardened (users read only their own profile row; admins
+read all), a database trigger blocks non-admins from changing `is_admin`
+or `email`, emails/usernames are rendered as text (never HTML), and the
+app stays locked if the Supabase library fails to load on the configured
+site (it never falls back to unlocked demo mode). The premium gate is
+enforced on every path: the tab lock overlay, the prediction renderer,
+the save/export/import actions, and the cloud race functions — and the
+subscription is re-checked every 5 minutes while signed in, so a grant
+unlocks the app without a reload and an expiry locks it again.
 
 ## Tech
 
@@ -197,6 +226,10 @@ keeps growing.
 2. Open **SQL Editor → New query**, paste `sql/schema.sql`, and run it.
    This creates the tables, RLS policies, the `is_admin()` helper, and the
    profile-creation trigger.
+   - Already have a live database? Run the migrations instead (in order):
+     `sql/migration-security-2026-11-21.sql`, then
+     `sql/migration-username.sql`. Never re-run the full `schema.sql` on a
+     live database that already has data.
 3. Go to **Project Settings → API** and copy:
    - **Project URL** → `SUPABASE_URL`
    - **anon public key** → `SUPABASE_ANON_KEY`
@@ -234,6 +267,9 @@ css/style.css               — dark blue/purple theme, mobile-first, 48px tap t
 js/config.js                — Supabase URL + anon key placeholders, admin emails
 js/app.js                   — data, prediction engine, storage, Supabase, all UI
 sql/schema.sql              — profiles, subscriptions, races + RLS + trigger
+sql/migration-username.sql  — add usernames to an existing database
+sql/migration-security-2026-11-21.sql — RLS hardening for an existing database
+SECURITY_AUDIT_2026-11-21.md — full security audit (21 Nov 2026)
 .github/workflows/deploy.yml — GitHub Pages deploy on push to main
 README.md                   — this file
 ```

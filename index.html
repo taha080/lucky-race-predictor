@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a1e5e">
+<!-- Content-Security-Policy: scripts only from this site + the Supabase
+     CDN; the app only talks to Supabase; inline styles are needed (the
+     app sets element styles from JS). This is defence-in-depth on top of
+     the textContent rendering in js/app.js — it cannot replace it. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.supabase.co wss://*.supabase.co; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';">
 <title>Lucky Race Predictor</title>
 <link rel="stylesheet" href="css/style.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
