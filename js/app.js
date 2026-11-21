@@ -21,12 +21,16 @@
        (c) equal probability (1/6) when there is no data at all
      Patterns change every round — never assume a fixed daily pattern.
      The model relearns from every newly saved race.
-   - HISTORY BLEND: when 150+ races are saved, blend the speed model with
+   - HISTORY BLEND: when 30+ races are saved, blend the speed model with
      the actual win rate for the same 3-vehicle set + the same known
      (pinned) segments.
-       w = clamp((N_total - 150) / 350, 0, 0.5)
+       w = clamp((N_total - 30) / 120, 0, 0.5)
      applied only if >= 5 saved races match that exact set + known segments.
        P_final = (1 - w) * P_model + w * P_hist
+     At 57 saved races the weight is 0.225 — real but modest, so the
+     speed model still decides and history only nudges it. The gate was
+     150 races until 21 Nov 2026; the user asked every prediction to use
+     all 57 saved races, so the gate came down to 30.
    - ONE-TRACK RULE: the game shows exactly ONE track before the bet, so
      at most ONE segment may be pinned (known). Pinning a second
      segment unpins the first; the other two stay Unknown.
@@ -124,8 +128,16 @@ function isDuplicateRace(candidate, raceList, ignoreId) {
   });
 }
 
-var HISTORY_BLEND_MIN_TOTAL = 150;   // start blending at 150 saved races
+var HISTORY_BLEND_MIN_TOTAL = 30;    // start blending at 30 saved races
 var HISTORY_BLEND_MIN_MATCHES = 5;   // need >= 5 races of the same set + seg1
+
+/* History-blend weight (pure, unit-tested): 0 below HISTORY_BLEND_MIN_TOTAL
+   races, then ramping to the 0.5 cap. At 57 races the weight is 0.225 —
+   real but modest, so the speed model still decides and history only
+   nudges it. The ramp denominator (120) is what sets that: (57-30)/120. */
+function historyBlendWeight(total) {
+  return clamp((total - HISTORY_BLEND_MIN_TOTAL) / 120, 0, 0.5);
+}
 
 /* ---------------- Config / environment ------------------------------------ */
 
@@ -178,6 +190,76 @@ var logForm = {        // Log Race tab state
   odds: {},
   editId: null
 };
+
+/* ---------------- Predict wizard state ------------------------------------- */
+/* The Predict tab is a staged wizard, not one long page:
+     step 0 = START screen (big START button; the 35s timer stays visible)
+     step 1 = pick 3 vehicles
+     step 2 = pin the ONE track the game shows (others stay Unknown)
+     step 3 = RUN result + feedback ("Was this prediction right?")
+   The odds step was removed 21 Nov 2026 (user's order: odds only track
+   how people bet, so they must not feed the prediction) — the odds engine
+   code stays, it just gets no odds input from this flow.
+   The whole START-to-RUN path is a few taps, well inside the 35s timer.
+   The last run is kept (vehicles + tracks + result + feedback) so the
+   feedback can be given after the race finishes — even if the user
+   leaves the tab or reloads the page. It is stored in localStorage
+   (LS_WIZARD) and restored on init; starting a new run clears it. */
+var LS_WIZARD = 'lrp_wizard_v1';
+var wizard = {
+  step: 0,
+  ran: false,
+  lastRun: null,      // { vehicles[3], tracks[3], main, result, ms }
+  feedback: null,     // null | 'correct' | { wrong: true, winner: name }
+  feedbackSaved: false
+};
+function saveWizard() {
+  lsSet(LS_WIZARD, JSON.stringify({
+    step: wizard.step,
+    ran: wizard.ran,
+    lastRun: wizard.lastRun,
+    feedback: wizard.feedback,
+    feedbackSaved: wizard.feedbackSaved,
+    vehicles: pred.vehicles,
+    seg1: pred.seg1, seg2: pred.seg2, seg3: pred.seg3
+  }));
+}
+/* Restore the wizard + the Predict picks from localStorage (no DOM yet —
+   call before the first renders in init). A corrupt or foreign save is
+   ignored, never fatal. Returns true when a run was restored. */
+function loadWizardState() {
+  try {
+    var raw = lsGet(LS_WIZARD);
+    if (!raw) return false;
+    var s = JSON.parse(raw);
+    if (!s || typeof s !== 'object') return false;
+    if (Array.isArray(s.vehicles)) {
+      pred.vehicles = s.vehicles.filter(function (v) { return vehicleByName(v); }).slice(0, 3);
+    }
+    [1, 2, 3].forEach(function (n) {
+      var st = s['seg' + n];
+      if (st && (st.mode === 'unknown' || st.mode === 'pin') &&
+          (st.mode === 'unknown' || TRACKS.indexOf(st.track) !== -1)) {
+        pred['seg' + n] = { mode: st.mode, track: st.mode === 'pin' ? st.track : null, chance: 50 };
+      }
+    });
+    /* The one-track rule must still hold after a restore (an old save
+       could carry two pins) — keep only the first pinned segment. */
+    var states = oneTrackHints([pred.seg1, pred.seg2, pred.seg3]);
+    pred.seg1 = states[0]; pred.seg2 = states[1]; pred.seg3 = states[2];
+    pred.odds = {};
+    wizard.step = (typeof s.step === 'number' && s.step >= 0 && s.step <= 3) ? s.step : 0;
+    wizard.ran = !!s.ran;
+    wizard.lastRun = (s.lastRun && Array.isArray(s.lastRun.vehicles) && s.lastRun.vehicles.length === 3 &&
+      Array.isArray(s.lastRun.tracks) && s.lastRun.tracks.length === 3 &&
+      s.lastRun.result && Array.isArray(s.lastRun.result.ranked)) ? s.lastRun : null;
+    if (!wizard.lastRun) wizard.ran = false;
+    wizard.feedback = s.feedback || null;
+    wizard.feedbackSaved = !!s.feedbackSaved;
+    if (wizard.feedbackSaved && !wizard.ran) wizard.feedbackSaved = false;
+    return wizard.ran;
+  } catch (e) { return false; }
+}
 
 /* ---------------- Small helpers -------------------------------------------- */
 
@@ -494,7 +576,7 @@ function computePrediction(input) {
       }
     });
     if (matches.length >= HISTORY_BLEND_MIN_MATCHES) {
-      var w = clamp((N - HISTORY_BLEND_MIN_TOTAL) / 350, 0, 0.5);
+      var w = historyBlendWeight(N);
       var histCounts = {};
       var histTotal = 0;
       vehicles.forEach(function (v) { histCounts[v] = 0; });
@@ -690,6 +772,7 @@ function initSupabase() {
       currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
       recoveryMode = false;
       races = []; saveLocalRaces();
+      resetPrediction(); // the run belonged to the signed-out user
       renderAccount();
       renderPrediction();
       applyTabLocks();
@@ -942,21 +1025,23 @@ function renderPredictVehicles() {
     grid.appendChild(card);
   });
   $('pickCount').textContent = pred.vehicles.length + '/3';
+  /* The Next button only works once 3 vehicles are picked. */
+  var next = $('toPinBtn');
+  if (next) next.disabled = pred.vehicles.length !== 3;
 }
 
 function togglePredictVehicle(name) {
   var i = pred.vehicles.indexOf(name);
   if (i !== -1) {
     pred.vehicles.splice(i, 1);
-    delete pred.odds[name];
   } else {
     if (pred.vehicles.length >= 3) { toast('Only 3 vehicles per round.'); return; }
     pred.vehicles.push(name);
-    pred.odds[name] = vehicleByName(name).odds;
   }
+  /* Changing the picks after a RUN invalidates that run's result. */
+  invalidateRun();
   renderPredictVehicles();
-  renderOddsBox();
-  renderPrediction();
+  saveWizard();
 }
 
 function renderTrackRow(containerId, selected, onPick, includeUnknown) {
@@ -992,12 +1077,16 @@ function renderPredictSeg(segNum) {
       pinSegment(segNum);
     }
     renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
-    renderPrediction();
+    /* Changing the pin after a RUN invalidates that run's result. */
+    invalidateRun();
+    saveWizard();
   }, true);
 }
 
-/* One-tap reset: vehicles, odds and all three segment boxes cleared, so
-   the next bet starts from a clean slate — no manual unselecting. */
+/* One-tap reset: vehicles and all three segment boxes cleared, and the
+   wizard goes back to the START screen, so the next bet starts from a
+   clean slate — no manual unselecting. Also used when the 35s timer is
+   reset (a new bet) and on sign-out (the run belonged to that user). */
 function resetPrediction() {
   pred.vehicles = [];
   pred.odds = {};
@@ -1005,9 +1094,172 @@ function resetPrediction() {
     pred['seg' + n] = { mode: 'unknown', track: null, chance: 50 };
     renderPredictSeg(n);
   });
+  wizard.step = 0; wizard.ran = false; wizard.lastRun = null;
+  wizard.feedback = null; wizard.feedbackSaved = false;
   renderPredictVehicles();
-  renderOddsBox();
   renderPrediction();
+  renderFeedback();
+  showWizardStep(0);
+}
+
+/* Picks or pins changed after a RUN: the shown result belongs to the old
+   picks, so drop it (and any unsubmitted feedback) instead of showing a
+   stale prediction. */
+function invalidateRun() {
+  if (!wizard.ran && !wizard.lastRun) return;
+  wizard.ran = false; wizard.lastRun = null;
+  wizard.feedback = null; wizard.feedbackSaved = false;
+  saveWizard();
+}
+
+/* ---------------- Predict wizard ------------------------------------------- */
+
+/* Show exactly one wizard step; the others hide. The 35s timer row sits
+   above the steps, so it stays visible on every step. */
+function showWizardStep(n) {
+  wizard.step = n;
+  ['wizStart', 'wizPick', 'wizPin', 'wizResult'].forEach(function (id, i) {
+    var stepEl = $(id);
+    if (stepEl) stepEl.classList.toggle('hidden', i !== n);
+  });
+  saveWizard();
+  window.scrollTo(0, 0);
+}
+
+/* RUN: compute the prediction for the current picks and show step 3.
+   No odds are passed — the wizard has no odds step, so the odds blend
+   is skipped and oddsInfo stays null. Compute is ~2ms; no artificial
+   delay is added. The result is snapshotted (wizard.lastRun): later
+   renderPrediction() calls re-render the same run instead of silently
+   changing the numbers when new data arrives. */
+function runPrediction() {
+  var gate = predictionAllowed();
+  if (!gate.ok) {
+    showWizardStep(3);
+    renderPrediction();
+    return;
+  }
+  if (pred.vehicles.length !== 3) { toast('Pick 3 vehicles first.'); return; }
+  var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+  var result = computePrediction({
+    vehicles: pred.vehicles,
+    seg1Hint: pred.seg1,
+    seg2Hint: pred.seg2,
+    seg3Hint: pred.seg3,
+    speeds: speeds,
+    races: races
+  });
+  var t1 = (typeof performance !== 'undefined') ? performance.now() : 0;
+  wizard.lastRun = {
+    vehicles: pred.vehicles.slice(),
+    tracks: [pred.seg1, pred.seg2, pred.seg3].map(function (s) {
+      return s.mode === 'pin' && s.track ? s.track : UNKNOWN_TRACK;
+    }),
+    main: result.ranked[0].vehicle,
+    result: result,
+    ms: Math.max(0, Math.round(t1 - t0))
+  };
+  wizard.ran = true;
+  wizard.feedback = null;
+  wizard.feedbackSaved = false;
+  saveWizard();
+  showWizardStep(3);
+  renderPrediction();
+  renderFeedback();
+}
+
+/* Build the race object a feedback answer saves. Pure — unit-tested in
+   Node. Returns null when the run or the winner is not usable. */
+function buildFeedbackRace(lastRun, winner) {
+  if (!lastRun || !Array.isArray(lastRun.vehicles) || lastRun.vehicles.length !== 3) return null;
+  if (!Array.isArray(lastRun.tracks) || lastRun.tracks.length !== 3) return null;
+  if (lastRun.vehicles.indexOf(winner) === -1) return null;
+  return {
+    id: 'local-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    vehicles: lastRun.vehicles.slice(),
+    tracks: normalizeTracksForSave(lastRun.tracks),
+    patterns: [],
+    winner: winner,
+    how_won: 'Other',
+    how_won_text: '',
+    odds: {},
+    created_at: new Date().toISOString()
+  };
+}
+
+/* Feedback box under the result (step 3). States:
+   - not answered: Correct / Wrong buttons.
+   - Wrong tapped, winner not yet picked: the 3 run vehicles as buttons.
+   - saved: buttons hidden, a short confirmation line instead.
+   The box is only meaningful after a RUN; it is hidden otherwise. */
+function renderFeedback() {
+  var box = $('feedbackBox');
+  if (!box) return;
+  box.classList.toggle('hidden', !wizard.ran);
+  if (!wizard.ran) return;
+  var btns = $('feedbackBtns');
+  var winnerRow = $('fbWinnerRow');
+  var savedMsg = $('fbSavedMsg');
+  var answered = !!wizard.feedback;
+  if (btns) btns.classList.toggle('hidden', answered);
+  var showWinnerRow = wizard.feedback && wizard.feedback.wrong && !wizard.feedback.winner && !wizard.feedbackSaved;
+  if (winnerRow) winnerRow.classList.toggle('hidden', !showWinnerRow);
+  if (showWinnerRow) {
+    var wb = $('fbWinnerBtns');
+    wb.innerHTML = '';
+    wizard.lastRun.vehicles.forEach(function (name) {
+      var b = el('button', 'track-btn', name);
+      b.addEventListener('click', function () {
+        wizard.feedback = { wrong: true, winner: name };
+        saveWizard();
+        renderFeedback();
+        saveFeedbackRace(name);
+      });
+      wb.appendChild(b);
+    });
+  }
+  if (savedMsg) {
+    if (wizard.feedbackSaved && wizard.feedback) {
+      var w = wizard.feedback === 'correct' ? wizard.lastRun.main : wizard.feedback.winner;
+      savedMsg.textContent = wizard.feedback === 'correct'
+        ? 'Saved — ' + w + ' won, the prediction was right. The model learned from this race.'
+        : 'Saved — ' + w + ' actually won. The model learned from this race.';
+      savedMsg.classList.remove('hidden');
+    } else if (answered) {
+      savedMsg.textContent = 'Saving…';
+      savedMsg.classList.remove('hidden');
+    } else {
+      savedMsg.textContent = '';
+      savedMsg.classList.add('hidden');
+    }
+  }
+}
+
+/* Save the last run as a race, from the feedback box. The winner is
+   either the MAIN pick (feedback "Correct") or the vehicle the user
+   tapped (feedback "Wrong"). Tracks are the run's tracks with unknowns
+   stored as 'unknown'; patterns/odds are empty, how_won is 'Other'.
+   Same insert path + duplicate protection as Log Race. The shown
+   result is NOT recomputed after saving — it stays frozen for this run;
+   the new race counts from the next run. */
+async function saveFeedbackRace(winner) {
+  if (!wizard.ran || !wizard.lastRun || wizard.feedbackSaved) return;
+  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
+  var race = buildFeedbackRace(wizard.lastRun, winner);
+  if (!race) { toast('Could not save this race.'); return; }
+  if (isDuplicateRace(race, races)) {
+    toast('This race is already saved.');
+    wizard.feedbackSaved = true;
+    renderFeedback(); saveWizard();
+    return;
+  }
+  var saved = await cloudInsertRace(race);
+  if (saved) { race.id = saved.id; race.created_at = saved.created_at || race.created_at; }
+  races.unshift(race);
+  saveLocalRaces();
+  wizard.feedbackSaved = true;
+  renderFeedback(); saveWizard();
+  toast('Race saved. Model updated.');
 }
 
 /* Long-press stepper: one tap = one step; hold = repeat fast (first
@@ -1034,33 +1286,6 @@ function bindStepper(btn, stepFn) {
   btn.addEventListener('click', function () {
     if (handled) { handled = false; return; }
     stepFn();
-  });
-}
-
-function renderOddsBox() {
-  var box = $('oddsBox');
-  var rows = $('oddsRows');
-  rows.innerHTML = '';
-  if (pred.vehicles.length === 0) { box.classList.add('hidden'); return; }
-  box.classList.remove('hidden');
-  pred.vehicles.forEach(function (name) {
-    var row = el('div', 'odds-row');
-    row.appendChild(el('span', 'odds-name', name));
-    var minus = el('button', 'stepper', '−');
-    var val = el('span', 'odds-val', (pred.odds[name] || 0).toFixed(1));
-    var plus = el('button', 'stepper', '+');
-    bindStepper(minus, function () {
-      pred.odds[name] = Math.max(1.0, Math.round(((pred.odds[name] || 2) - 0.1) * 10) / 10);
-      val.textContent = pred.odds[name].toFixed(1);
-      renderPrediction();
-    });
-    bindStepper(plus, function () {
-      pred.odds[name] = Math.min(20, Math.round(((pred.odds[name] || 2) + 0.1) * 10) / 10);
-      val.textContent = pred.odds[name].toFixed(1);
-      renderPrediction();
-    });
-    row.appendChild(minus); row.appendChild(val); row.appendChild(plus);
-    rows.appendChild(row);
   });
 }
 
@@ -1137,6 +1362,10 @@ function renderPrediction() {
   var line = $('assumedLine');
   line.textContent = '';
 
+  /* START screen: how much data every prediction analyses. */
+  var sc = $('wizStartCount');
+  if (sc) sc.textContent = races.length + ' saved races — every prediction analyses all of them.';
+
   var gate = predictionAllowed();
   if (!gate.ok) {
     panel.innerHTML = lockedHtml(gate.reason);
@@ -1145,25 +1374,22 @@ function renderPrediction() {
     return;
   }
 
-  if (pred.vehicles.length !== 3) {
-    panel.innerHTML = '<p class="result-empty">Pick 3 vehicles to see the prediction.</p>';
+  /* The wizard computes on RUN and shows a frozen snapshot: later calls
+     (new race saved, speeds changed, tab revisited) re-render the same
+     run instead of silently changing the numbers under the user. */
+  if (!wizard.ran || !wizard.lastRun || !wizard.lastRun.result) {
+    panel.innerHTML = '<p class="result-empty">Tap RUN to see the prediction.</p>';
     return;
   }
 
-  var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
-  var result = computePrediction({
-    vehicles: pred.vehicles,
-    seg1Hint: pred.seg1,
-    seg2Hint: pred.seg2,
-    seg3Hint: pred.seg3,
-    speeds: speeds,
-    races: races,
-    odds: pred.odds
-  });
-  var t1 = (typeof performance !== 'undefined') ? performance.now() : 0;
-  var ms = Math.max(0, Math.round(t1 - t0));
+  var result = wizard.lastRun.result;
+  var vehicles = wizard.lastRun.vehicles;
+  var ms = wizard.lastRun.ms || 0;
 
-  var knownSegs = pinnedSegments([pred.seg1, pred.seg2, pred.seg3]);
+  var knownSegs = {};
+  wizard.lastRun.tracks.forEach(function (t, i) {
+    if (t !== UNKNOWN_TRACK) knownSegs[i] = t;
+  });
   var knownParts = [];
   Object.keys(knownSegs).forEach(function (k) {
     knownParts.push('Seg ' + (parseInt(k, 10) + 1) + ' ' + knownSegs[k]);
@@ -1172,13 +1398,11 @@ function renderPrediction() {
   var html = '<div class="result-title">Top picks' +
     (knownParts.length ? ' — known: ' + knownParts.join(', ') : ' — all segments unknown') + '</div>';
   top.forEach(function (r, idx) {
-    var others = pred.vehicles.filter(function (v) { return v !== r.vehicle; });
+    var others = vehicles.filter(function (v) { return v !== r.vehicle; });
     var reason = buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
     var pct = Math.min(99, Math.round(r.prob * 100));
-    var oddsTxt = pred.odds[r.vehicle] ? ' · Odds ' + pred.odds[r.vehicle].toFixed(1) : '';
-    // Expected return (probability x odds) updates live with the odds,
-    // so adjusting the return changes the result shown below.
-    var evTxt = pred.odds[r.vehicle] ? ' · Expected return ' + (r.prob * pred.odds[r.vehicle]).toFixed(2) + 'x' : '';
+    /* No odds text here: the wizard has no odds step, so there are no
+       odds to show and no expected return to compute. */
     // #1 is the MAIN PICK (big, highlighted); #2 is the smaller BACKUP PICK.
     var isMain = idx === 0;
     var label = isMain ? 'MAIN PICK' : 'BACKUP PICK';
@@ -1187,13 +1411,12 @@ function renderPrediction() {
       '<div class="result-head"><span class="result-name">' + r.vehicle + '</span>' +
       '<span class="result-conf">' + pct + '%</span></div>' +
       '<div class="conf-bar"><div class="conf-fill" style="width:' + pct + '%"></div></div>' +
-      '<div class="result-reason">' + reason + oddsTxt + evTxt + '</div></div>';
+      '<div class="result-reason">' + reason + '</div></div>';
   });
   var third = result.ranked[2];
   html += '<div class="result-foot">3rd: ' + third.vehicle + ' — ' + Math.min(99, Math.round(third.prob * 100)) + '%' +
     (result.histInfo ? ' · blended with history (' + result.histInfo.matches + ' matching races, weight ' +
       Math.round(result.histInfo.weight * 100) + '%)' : '') +
-    (result.oddsInfo ? ' · odds blended (' + Math.round(result.oddsInfo.weight * 100) + '%)' : '') +
     ' · computed in ' + ms + ' ms</div>';
   panel.innerHTML = html;
 
@@ -1504,7 +1727,7 @@ function renderStats() {
   var s = computeStats();
   $('statsSummary').innerHTML =
     '<div class="stat-chip"><div class="num">' + s.total + '</div><div class="lbl">Races logged</div></div>' +
-    '<div class="stat-chip"><div class="num">' + (s.total >= 150 ? 'ON' : 'OFF') + '</div><div class="lbl">History blend (150+)</div></div>' +
+    '<div class="stat-chip"><div class="num">' + (s.total >= 30 ? 'ON' : 'OFF') + '</div><div class="lbl">History blend (30+)</div></div>' +
     '<div class="stat-chip"><div class="num">' + VEHICLES.length + '</div><div class="lbl">Vehicles</div></div>';
 
   var vBox = $('statsVehicles');
@@ -1889,6 +2112,7 @@ function renderAccount() {
     /* Clear the local race cache on sign-out: it belongs to the user who
        just left, and must not be shown to the next user on this browser. */
     races = []; saveLocalRaces();
+    resetPrediction(); // the run belonged to the signed-out user
     renderAccount();
     renderPrediction();
     applyTabLocks();
@@ -2063,6 +2287,9 @@ function init() {
   if (authLinkError) clearAuthHash();
   races = loadLocalRaces();
   speeds = loadLocalSpeeds();
+  /* Restore the wizard's last run (if any) before the first renders, so
+     a pending feedback survives a reload. */
+  loadWizardState();
   initSupabase();
   if (DEMO_MODE) {
     var banner = $('demoBanner');
@@ -2085,16 +2312,35 @@ function init() {
   renderPredictSeg(1);
   renderPredictSeg(2);
   renderPredictSeg(3);
-  renderOddsBox();
   renderPrediction();
+  renderFeedback();
   renderLogForm();
   renderRaceList();
   renderStats();
   renderSpeedTable();
   renderTimer();
+  showWizardStep(wizard.step);
 
   $('timerBtn').addEventListener('click', startTimer);
-  $('resetSegsBtn').addEventListener('click', resetPrediction);
+  $('startBtn').addEventListener('click', function () { showWizardStep(1); });
+  $('toPinBtn').addEventListener('click', function () { showWizardStep(2); });
+  $('backToStartBtn').addEventListener('click', function () { showWizardStep(0); });
+  $('backToPickBtn').addEventListener('click', function () { showWizardStep(1); });
+  $('runBtn').addEventListener('click', runPrediction);
+  $('newPredBtn').addEventListener('click', resetPrediction);
+  $('fbCorrectBtn').addEventListener('click', function () {
+    if (!wizard.ran || wizard.feedbackSaved || !wizard.lastRun) return;
+    wizard.feedback = 'correct';
+    saveWizard();
+    renderFeedback();
+    saveFeedbackRace(wizard.lastRun.main);
+  });
+  $('fbWrongBtn').addEventListener('click', function () {
+    if (!wizard.ran || wizard.feedbackSaved) return;
+    wizard.feedback = { wrong: true, winner: null };
+    saveWizard();
+    renderFeedback();
+  });
   $('saveRaceBtn').addEventListener('click', saveRace);
   $('cancelEditBtn').addEventListener('click', function () { resetLogForm(); });
   $('logHowText').addEventListener('input', function (e) { logForm.howWonText = e.target.value; });
@@ -2168,6 +2414,8 @@ if (typeof module !== 'undefined' && module.exports) {
     oneTrackHints: oneTrackHints,
     decayWeight: decayWeight,
     historyHalfLife: historyHalfLife,
+    historyBlendWeight: historyBlendWeight,
+    buildFeedbackRace: buildFeedbackRace,
     oddsBlendWeight: oddsBlendWeight,
     segmentLengths: segmentLengths,
     resolveVehicleName: resolveVehicleName,
