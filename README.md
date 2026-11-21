@@ -69,6 +69,8 @@ speed table live in `localStorage` and predictions work with no account.
 | Motorcycle | 94 | 89 | 63 | 81 | 68 | 81 |
 | ATV | 80 | 80 | 72 | 72 | 72 | 76 |
 
+**Duplicate protection.** A race is never added twice: a new race is a duplicate when a saved race already has the same 3 vehicles (in any order), the same 3 tracks (exact, including `"unknown"` entries), the same winner, and the same note (`how_won_text`). A different note or a different winner makes it a different race. The check runs when saving from the Log tab (a duplicate shows "This race is already saved." and is not stored) and when importing a CSV (duplicate rows are skipped and counted in the import toast). Editing a race never flags the race itself as a duplicate.
+
 ## How the prediction works
 
 1. **Time model.** A race has 3 segments of equal length. A vehicle's time
