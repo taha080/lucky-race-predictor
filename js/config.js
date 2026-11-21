@@ -49,7 +49,24 @@ var LRP_CONFIG = {
   ADMIN_EMAILS: [
     "ahantaha16@gmail.com",
     "ahsantaha16@gmail.com"
-  ]
+  ],
+
+  // Global free-use window: every signed-in user can use the app free
+  // until this instant, then premium is required (see FREE_UNTIL note
+  // below). The owner is never locked, before or after the cutoff.
+  // 24 Nov 2026, 23:59 PKT = 24 Nov 2026, 18:59 UTC (PKT is UTC+5,
+  // no daylight saving). Verified: TZ=Asia/Karachi date -d
+  // '2026-11-24T18:59:59Z' prints 2026-11-24 23:59:59 PKT.
+  // Access rule: now < FREE_UNTIL means free; at/after it, premium only.
+  FREE_UNTIL: "2026-11-24T18:59:59.000Z",
+
+  // Owner's WhatsApp for buying premium. wa.me format: country code 92
+  // + 3087215460 — no "+" and no leading 0 (the number is
+  // +92 308 7215460). The Buy Premium view shows the display number as
+  // plain text and a button opening https://wa.me/923087215460 with a
+  // prefilled message. No payment page is ever used.
+  OWNER_WHATSAPP_NUMBER: "923087215460",
+  OWNER_WHATSAPP_DISPLAY: "+92 308 7215460"
 };
 
 if (typeof window !== "undefined") {
