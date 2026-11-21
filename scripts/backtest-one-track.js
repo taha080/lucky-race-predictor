@@ -80,4 +80,7 @@ run(9, 39, 'overall (history 10-39 races)');
 run(9, 24, 'early   (history 10-24 races)');
 run(25, 39, 'late    (history 25-39 races)');
 console.log('random baseline: top-1 = 33.3%, top-2 = 66.7% (3 vehicles)');
-console.log('history blend gate: OFF below 150 races (current N=40)');
+console.log('history blend gate: ON at 30+ races (current N=40), weight (N-30)/120 capped at 0.5;');
+console.log('  the blend only fires when >= 5 races match the exact set + pinned segments,');
+console.log('  and no set repeats 5 times in these 40 races — so the gate change alone');
+console.log('  does not move these numbers; it starts engaging as sets repeat.');
