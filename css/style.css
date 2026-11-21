@@ -244,3 +244,35 @@ table.data input { width: 56px; min-height: 40px; text-align: center; font-size:
 .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 100;
   background: #101a3a; color: #fff; border: 1px solid var(--yellow); border-radius: 999px;
   padding: 10px 18px; font-size: 14px; font-weight: 700; box-shadow: 0 4px 18px rgba(0,0,0,.5); white-space: nowrap; }
+
+/* ---------- Auth (Athera-style login / sign-up card) ---------- */
+/* Centred white card on the dark app background, like Athera Talks'
+   AuthFrame: logo + name + tagline above the card, Sign in / Sign up
+   tabs, labelled fields, show/hide password, inline errors. */
+.auth-wrap { max-width: 400px; margin: 0 auto; padding: 8px 0 4px; }
+.auth-brand { text-align: center; margin: 14px 0 20px; }
+.auth-logo { font-size: 30px; font-weight: 900; font-style: italic; letter-spacing: 2px; color: #fff; text-shadow: 0 2px 0 rgba(0,0,0,.35); }
+.auth-logo span { color: var(--yellow); }
+.auth-name { font-size: 20px; font-weight: 700; color: #fff; margin-top: 6px; }
+.auth-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.auth-card { background: #fff; color: #1c2128; border-radius: 16px; border: 1px solid #e2e6eb; padding: 24px; box-shadow: 0 8px 24px rgba(15,23,42,.25); }
+.auth-card .btn-block { margin-top: 0; }
+.auth-title { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; background: #f7f8fa; border-radius: 8px; padding: 4px; margin-bottom: 16px; }
+.auth-tab { min-height: 40px; border: none; background: none; border-radius: 6px; font-size: 14px; font-weight: 600; color: #5c6570; cursor: pointer; }
+.auth-tab.active { background: #fff; color: #1c2128; box-shadow: 0 1px 2px rgba(15,23,42,.12); }
+.auth-note { font-size: 13px; color: #5c6570; line-height: 1.5; margin-bottom: 16px; }
+.auth-field-block { margin-bottom: 16px; }
+.auth-label { display: block; font-size: 14px; font-weight: 600; color: #1c2128; margin-bottom: 6px; }
+.auth-label .auth-hint { float: right; font-size: 12px; font-weight: 400; color: #5c6570; }
+.auth-input { width: 100%; min-height: 48px; border-radius: 8px; border: 1px solid #e2e6eb; background: #f7f8fa; color: #1c2128; font-size: 15px; padding: 10px 12px; outline: none; }
+.auth-input:focus { border-color: #e0b400; box-shadow: 0 0 0 2px rgba(255,210,31,.35); }
+.auth-input::placeholder { color: rgba(92,101,112,.7); }
+.auth-field-wrap { position: relative; display: block; }
+.auth-field-wrap .auth-input { padding-right: 64px; }
+.auth-show { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; color: #5c6570; font-size: 12px; font-weight: 600; padding: 6px 8px; cursor: pointer; border-radius: 6px; }
+.auth-field-error { display: block; font-size: 12px; color: #9f1239; margin-top: 6px; }
+.auth-error { background: rgba(240,113,103,.12); color: #9f1239; border-radius: 8px; padding: 10px 12px; font-size: 14px; line-height: 1.45; margin-bottom: 16px; }
+.auth-info { background: rgba(14,122,69,.10); color: #0e7a45; border-radius: 8px; padding: 10px 12px; font-size: 14px; line-height: 1.45; margin-bottom: 16px; }
+.auth-secondary { width: 100%; min-height: 48px; margin-top: 12px; border-radius: 8px; border: 1px solid #e2e6eb; background: #f7f8fa; color: #1c2128; font-size: 14px; font-weight: 600; cursor: pointer; }
+.auth-footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 20px; }
