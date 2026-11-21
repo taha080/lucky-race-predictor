@@ -34,9 +34,12 @@ var LRP_CONFIG = {
   // (the game pays more on the vehicle it thinks is less likely).
   // Final % = (1 - ODDS_BLEND_WEIGHT) * track+speed+history %
   //         + ODDS_BLEND_WEIGHT * odds-implied %.
-  // 0.5 = half and half. Changing the odds on the Predict tab now
-  // moves the shown % live — and can flip MAIN / BACKUP.
-  ODDS_BLEND_WEIGHT: 0.5,
+  // 0.1 = odds only NUDGE the % a little (user's order, 21 Nov voice
+  // call: odds come from how many people bet on a vehicle, not from
+  // who will win — so they must never decide the prediction).
+  // Changing the odds on the Predict tab moves the shown % only
+  // slightly; MAIN / BACKUP almost never flips on odds alone.
+  ODDS_BLEND_WEIGHT: 0.1,
 
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.

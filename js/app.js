@@ -291,12 +291,12 @@ function segmentLengths() {
 }
 
 /* Odds blend weight: how much the game's odds move the prediction %
-   (editable in js/config.js as ODDS_BLEND_WEIGHT, default 0.5).
-   Invalid or missing config falls back to 0.5; 0 = odds ignored. */
+   (editable in js/config.js as ODDS_BLEND_WEIGHT, default 0.1).
+   Invalid or missing config falls back to 0.1; 0 = odds ignored. */
 function oddsBlendWeight() {
   var w = CONFIG && CONFIG.ODDS_BLEND_WEIGHT;
   if (typeof w === 'number' && isFinite(w) && w >= 0 && w <= 1) return w;
-  return 0.5;
+  return 0.1;
 }
 
 /* Historical frequency of a track type for a segment position (index 0, 1
