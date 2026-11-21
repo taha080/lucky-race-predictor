@@ -408,6 +408,40 @@ function oneTrackHints(hints) {
   });
 }
 
+/* Confidence guard (unit-tested in Node via scripts/test-confidence-guard.js).
+   Called from computePrediction right after the odds blend, with
+   unknownCount = number of segments not pinned (3 minus pinned count).
+   While segments are only guessed, no vehicle may look certain: shrink
+   every % toward 1/3 (0.2 per unknown segment), then clamp — [0.05, 0.90]
+   with any unknown segment, [0.02, 0.95] with all three known — then
+   renormalise so the three still sum to 1, then clamp once more so the
+   cap holds exactly (renormalising a capped value can push it just over
+   the cap again, e.g. [1, 0, 0] -> 95.96% without this step). The final
+   clamp means the displayed total can be 99-100% in degenerate cases.
+   Mutates `final` in place. */
+function applyConfidenceGuard(final, unknownCount) {
+  var vehicles = Object.keys(final);
+  var shrink = 0.2 * unknownCount;
+  if (shrink > 0) {
+    vehicles.forEach(function (v) {
+      final[v] = (1 - shrink) * final[v] + shrink * (1 / 3);
+    });
+  }
+  var guardLo = unknownCount > 0 ? 0.05 : 0.02;
+  var guardHi = unknownCount > 0 ? 0.90 : 0.95;
+  vehicles.forEach(function (v) {
+    final[v] = clamp(final[v], guardLo, guardHi);
+  });
+  var guardTotal = vehicles.reduce(function (s, v) { return s + final[v]; }, 0);
+  vehicles.forEach(function (v) { final[v] = final[v] / guardTotal; });
+  // Final clamp: renormalising can push a capped value just over the cap
+  // again ([1,0,0] -> 95.96% without this). No second renormalise — the
+  // displayed total may then be 99-100% in degenerate cases, which is fine.
+  vehicles.forEach(function (v) {
+    final[v] = clamp(final[v], guardLo, guardHi);
+  });
+}
+
 /* Core prediction. Returns { ranked: [{vehicle, prob, modelProb}], dist1, dist2, dist3, histInfo } */
 function computePrediction(input) {
   var vehicles = input.vehicles;
@@ -503,6 +537,11 @@ function computePrediction(input) {
     });
     oddsInfo = { weight: ow, implied: implied };
   }
+
+  // Confidence guard (see applyConfidenceGuard): while segments are only
+  // guessed (not pinned), no vehicle may look certain. The 99 display
+  // cap in the render code stays as a backstop.
+  applyConfidenceGuard(final, 3 - Object.keys(knownSegs).length);
 
   var ranked = vehicles.map(function (v) {
     return { vehicle: v, prob: final[v], modelProb: probs[v], oddsProb: oddsInfo ? oddsInfo.implied[v] : null };
@@ -2120,6 +2159,7 @@ if (typeof module !== 'undefined' && module.exports) {
     isDuplicateRace: isDuplicateRace,
     isValidRaceTracks: isValidRaceTracks,
     computePrediction: computePrediction,
+    applyConfidenceGuard: applyConfidenceGuard,
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
     pinnedSegments: pinnedSegments,
