@@ -4,8 +4,10 @@
    ----------------------------------------------------------------------------
    PREDICTION MODEL (see README.md for the full description):
    - 3 segments, equal length. Time(v) = sum over segments of 1/speed[v][track].
-   - Segment 1 track is known. Segments 2 & 3 are hidden: enumerate all 6x6
-     track combos, weight each by P(t2) * P(t3), winner = lowest time
+   - Any segment can be Unknown: the shown segment may be in ANY position
+     (first, second or third) — or no segment may be shown at all. Unknown
+     segments are never guessed: enumerate all track combos (up to 6x6x6),
+     weight each by P(t1) * P(t2) * P(t3), winner = lowest time
      (exact ties split the weight equally).
    - P(segment) comes from, in order:
        (a) user-pinned track          -> 1.0 for that track
@@ -14,15 +16,17 @@
                                            (1-p) is shared over the other 5
                                            tracks by historical frequency
        (c) historical frequency of that track for that segment position,
-           given the first segment, learned from saved races
+           learned from saved races, conditioned on the segments that ARE
+           known (pinned) — "unknown" entries in saved races are ignored
        (d) equal probability (1/6) when there is no data at all
      IMPORTANT: a hint is a LIKELIHOOD, never a certainty. Patterns change
      every round — never assume a fixed daily pattern. The model relearns
      from every newly saved race.
    - HISTORY BLEND: when 150+ races are saved, blend the speed model with
-     the actual win rate for the same 3-vehicle set + first track.
+     the actual win rate for the same 3-vehicle set + the same known
+     (pinned) segments.
        w = clamp((N_total - 150) / 350, 0, 0.5)
-     applied only if >= 5 saved races match that exact set + first track.
+     applied only if >= 5 saved races match that exact set + known segments.
        P_final = (1 - w) * P_model + w * P_hist
    ========================================================================== */
 
@@ -64,6 +68,14 @@ var HOW_WON_OPTIONS = [
   'Other'
 ];
 
+// Stored value for a segment whose track is not known. Saved races keep
+// 'unknown' as a real value — it is never converted to a track type.
+var UNKNOWN_TRACK = 'unknown';
+
+function normalizeTracksForSave(tracks) {
+  return (tracks || []).map(function (t) { return t || UNKNOWN_TRACK; });
+}
+
 var CHANCE_OPTIONS = [100, 90, 70, 50, 30, 20, 10]; // 100 = pinned
 var HISTORY_BLEND_MIN_TOTAL = 150;   // start blending at 150 saved races
 var HISTORY_BLEND_MIN_MATCHES = 5;   // need >= 5 races of the same set + seg1
@@ -86,7 +98,10 @@ var speeds = cloneSpeeds(DEFAULT_SPEEDS);
 
 var pred = {           // Predict tab state
   vehicles: [],        // up to 3 names
-  seg1: null,
+  // All three segments behave the same: { mode, track, chance }.
+  // mode: unknown|hint|pin. Default is Unknown for every segment — never
+  // pre-select or auto-fill a track, including segment 1.
+  seg1: { mode: 'unknown', track: null, chance: 50 },
   seg2: { mode: 'unknown', track: null, chance: 50 }, // mode: unknown|hint|pin
   seg3: { mode: 'unknown', track: null, chance: 50 },
   odds: {}             // name -> number
@@ -145,38 +160,44 @@ function toast(msg) {
    PREDICTION ENGINE (pure functions — also unit-tested in Node, see bottom)
    ========================================================================== */
 
-/* Historical frequency of a track type for a segment position (index 1 or 2),
-   conditioned on the first segment's track. Falls back to all races for that
-   position, then to equal probability (1/6) when there is no data. */
-function historicalFreq(segIndex, seg1, raceList) {
+/* Historical frequency of a track type for a segment position (index 0, 1
+   or 2), conditioned on the segments that ARE known (pinned).
+   knownSegs = { segmentIndex: track } for pinned segments only.
+   Falls back to all races for that position, then to equal probability
+   (1/6) when there is no data. Saved races with 'unknown' at this position
+   are excluded from the counts — they carry no track information. */
+function historicalFreq(segIndex, knownSegs, raceList) {
   var dist = {};
   TRACKS.forEach(function (t) { dist[t] = 0; });
+  knownSegs = knownSegs || {};
+  var knownKeys = Object.keys(knownSegs);
   var pool = raceList.filter(function (r) {
-    return r.tracks && r.tracks[0] === seg1;
+    if (!r.tracks) return false;
+    return knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; });
   });
-  if (!pool.length) pool = raceList;
-  if (!pool.length) {
+  if (!pool.length) pool = raceList.filter(function (r) { return r.tracks; });
+  var knownCount = 0;
+  pool.forEach(function (r) {
+    var t = r.tracks[segIndex];
+    if (dist[t] !== undefined) { dist[t] += 1; knownCount += 1; }
+  });
+  if (!knownCount) {
     TRACKS.forEach(function (t) { dist[t] = 1 / TRACKS.length; });
     return dist;
   }
-  pool.forEach(function (r) {
-    var t = r.tracks[segIndex];
-    if (dist[t] !== undefined) dist[t] += 1;
-  });
-  var total = pool.length;
-  TRACKS.forEach(function (t) { dist[t] = dist[t] / total; });
+  TRACKS.forEach(function (t) { dist[t] = dist[t] / knownCount; });
   return dist;
 }
 
-/* Probability distribution over the 6 tracks for one hidden segment.
+/* Probability distribution over the 6 tracks for one segment.
    hint = { mode: 'unknown' | 'hint' | 'pin', track, chance } */
-function segmentDistribution(segIndex, seg1, hint, raceList) {
+function segmentDistribution(segIndex, knownSegs, hint, raceList) {
   if (hint && hint.mode === 'pin' && hint.track) {
     var pinned = {};
     TRACKS.forEach(function (t) { pinned[t] = (t === hint.track) ? 1 : 0; });
     return pinned;
   }
-  var hist = historicalFreq(segIndex, seg1, raceList);
+  var hist = historicalFreq(segIndex, knownSegs, raceList);
   if (hint && hint.mode === 'hint' && hint.track) {
     var p = clamp((hint.chance || 50) / 100, 0, 1);
     var others = TRACKS.filter(function (t) { return t !== hint.track; });
@@ -191,44 +212,61 @@ function segmentDistribution(segIndex, seg1, hint, raceList) {
   return hist;
 }
 
-/* Core prediction. Returns { ranked: [{vehicle, prob, modelProb}], dist2, dist3, histInfo } */
+/* Segments the user has pinned (knows exactly), as { segmentIndex: track }. */
+function pinnedSegments(hints) {
+  var known = {};
+  (hints || []).forEach(function (h, i) {
+    if (h && h.mode === 'pin' && h.track) known[i] = h.track;
+  });
+  return known;
+}
+
+/* Core prediction. Returns { ranked: [{vehicle, prob, modelProb}], dist1, dist2, dist3, histInfo } */
 function computePrediction(input) {
   var vehicles = input.vehicles;
-  var seg1 = input.seg1;
   var speedsMap = input.speeds;
   var raceList = input.races || [];
+  var hints = [input.seg1Hint, input.seg2Hint, input.seg3Hint];
+  var knownSegs = pinnedSegments(hints);
 
-  var d2 = segmentDistribution(1, seg1, input.seg2Hint, raceList);
-  var d3 = segmentDistribution(2, seg1, input.seg3Hint, raceList);
+  var dists = hints.map(function (h, i) { return segmentDistribution(i, knownSegs, h, raceList); });
 
   var probs = {};
   vehicles.forEach(function (v) { probs[v] = 0; });
 
-  // Enumerate all 6x6 hidden-track combos, weighted by P(t2)*P(t3).
-  TRACKS.forEach(function (t2) {
-    TRACKS.forEach(function (t3) {
-      var w = (d2[t2] || 0) * (d3[t3] || 0);
-      if (w <= 0) return;
-      var times = vehicles.map(function (v) {
-        return 1 / speedsMap[v][seg1] + 1 / speedsMap[v][t2] + 1 / speedsMap[v][t3];
+  // Enumerate all track combos (up to 6x6x6), weighted by P(t1)*P(t2)*P(t3).
+  // A pinned segment is a point mass, so it contributes only its one track.
+  TRACKS.forEach(function (t1) {
+    TRACKS.forEach(function (t2) {
+      TRACKS.forEach(function (t3) {
+        var combo = [t1, t2, t3];
+        var w = combo.reduce(function (acc, t, i) { return acc * (dists[i][t] || 0); }, 1);
+        if (w <= 0) return;
+        var times = vehicles.map(function (v) {
+          return 1 / speedsMap[v][combo[0]] + 1 / speedsMap[v][combo[1]] + 1 / speedsMap[v][combo[2]];
+        });
+        var min = Math.min.apply(null, times);
+        var winners = [];
+        times.forEach(function (t, i) { if (t === min) winners.push(i); });
+        winners.forEach(function (i) { probs[vehicles[i]] += w / winners.length; });
       });
-      var min = Math.min.apply(null, times);
-      var winners = [];
-      times.forEach(function (t, i) { if (t === min) winners.push(i); });
-      winners.forEach(function (i) { probs[vehicles[i]] += w / winners.length; });
     });
   });
 
   // History blend (only with plenty of data and enough exact matches).
+  // Matches share the same 3-vehicle set AND the same known (pinned) segments.
+  // No pinned segment is required — with none pinned, any race with the
+  // same vehicle set matches.
   var blended = {};
   vehicles.forEach(function (v) { blended[v] = probs[v]; });
   var histInfo = null;
   var N = raceList.length;
   if (N >= HISTORY_BLEND_MIN_TOTAL) {
     var setKey = vehicles.slice().sort().join('|');
+    var knownKeys = Object.keys(knownSegs);
     var matches = raceList.filter(function (r) {
-      return r.tracks && r.tracks[0] === seg1 &&
-        r.vehicles && r.vehicles.slice().sort().join('|') === setKey;
+      return r.tracks && r.vehicles && r.vehicles.slice().sort().join('|') === setKey &&
+        knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; });
     });
     if (matches.length >= HISTORY_BLEND_MIN_MATCHES) {
       var w = clamp((N - HISTORY_BLEND_MIN_TOTAL) / 350, 0, 0.5);
@@ -249,11 +287,13 @@ function computePrediction(input) {
     return { vehicle: v, prob: blended[v], modelProb: probs[v] };
   }).sort(function (a, b) { return b.prob - a.prob; });
 
-  return { ranked: ranked, dist2: d2, dist3: d3, histInfo: histInfo };
+  return { ranked: ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: histInfo };
 }
 
-/* Short human reason for a pick, given the distributions used. */
-function buildReason(vehicle, others, seg1, d2, d3, speedsMap) {
+/* Short human reason for a pick, given the distributions used.
+   knownSegs = { segmentIndex: track } for pinned segments.
+   dists = [dist1, dist2, dist3] probability distributions per segment. */
+function buildReason(vehicle, others, knownSegs, dists, speedsMap) {
   var parts = [];
   var contenders = [vehicle].concat(others);
 
@@ -266,11 +306,20 @@ function buildReason(vehicle, others, seg1, d2, d3, speedsMap) {
     return best === v;
   }
 
-  if (isFastest(vehicle, seg1)) parts.push('fastest on ' + seg1);
-  var top2 = TRACKS.slice().sort(function (a, b) { return d2[b] - d2[a]; })[0];
-  var top3 = TRACKS.slice().sort(function (a, b) { return d3[b] - d3[a]; })[0];
+  knownSegs = knownSegs || {};
+  Object.keys(knownSegs).forEach(function (k) {
+    var track = knownSegs[k];
+    if (isFastest(vehicle, track)) parts.push('fastest on ' + track + ' (seg ' + (parseInt(k, 10) + 1) + ')');
+  });
   var likely = [];
-  [top2, top3].forEach(function (t) { if (likely.indexOf(t) === -1) likely.push(t); });
+  (dists || []).forEach(function (d, i) {
+    if (knownSegs[i] || !d) return;
+    // Name a "likely" track only when the distribution actually favours one.
+    // With a flat (uniform) distribution every track is equally likely, so
+    // naming one would be a guess, not a likelihood.
+    var top = TRACKS.slice().sort(function (a, b) { return d[b] - d[a]; })[0];
+    if (d[top] > 1 / TRACKS.length + 0.05 && likely.indexOf(top) === -1) likely.push(top);
+  });
   var strong = likely.filter(function (t) { return isFastest(vehicle, t); });
   if (strong.length) parts.push('strong on likely ' + strong.join(' / '));
   var vr = vehicleByName(vehicle).winRate;
@@ -494,24 +543,19 @@ function renderTrackRow(containerId, selected, onPick, includeUnknown) {
     row.appendChild(b);
   });
   if (includeUnknown) {
-    var u = el('button', 'track-btn unknown-btn' + (!selected ? ' selected' : ''), 'Unknown');
+    var u = el('button', 'track-btn unknown-btn' + (!selected ? ' selected' : ''), '? Unknown');
     u.addEventListener('click', function () { onPick(null); });
     row.appendChild(u);
   }
 }
 
-function renderSeg1() {
-  renderTrackRow('seg1Tracks', pred.seg1, function (t) {
-    pred.seg1 = t;
-    renderSeg1();
-    renderPrediction();
-  }, false);
-}
-
-function renderHiddenSeg(segNum) {
-  var state = segNum === 2 ? pred.seg2 : pred.seg3;
-  var rowId = segNum === 2 ? 'seg2Tracks' : 'seg3Tracks';
-  var chanceId = segNum === 2 ? 'seg2Chance' : 'seg3Chance';
+/* One renderer for all three Predict segment boxes (1, 2 and 3 behave the
+   same): tap a track to hint it (50% by default — change the chance or pin
+   it with the chips below), tap "? Unknown" to leave it unknown. */
+function renderPredictSeg(segNum) {
+  var state = pred['seg' + segNum];
+  var rowId = 'seg' + segNum + 'Tracks';
+  var chanceId = 'seg' + segNum + 'Chance';
   renderTrackRow(rowId, state.mode === 'unknown' ? null : state.track, function (t) {
     if (t === null) {
       state.mode = 'unknown'; state.track = null;
@@ -521,7 +565,7 @@ function renderHiddenSeg(segNum) {
       state.mode = 'hint'; state.track = t;
       if (!state.chance) state.chance = 50;
     }
-    renderHiddenSeg(segNum);
+    renderPredictSeg(segNum);
     renderPrediction();
   }, true);
 
@@ -537,7 +581,7 @@ function renderHiddenSeg(segNum) {
       chip.addEventListener('click', function () {
         if (c === 100) { state.mode = 'pin'; }
         else { state.mode = 'hint'; state.chance = c; }
-        renderHiddenSeg(segNum);
+        renderPredictSeg(segNum);
         renderPrediction();
       });
       chanceRow.appendChild(chip);
@@ -545,6 +589,15 @@ function renderHiddenSeg(segNum) {
   } else {
     chanceRow.classList.add('hidden');
   }
+}
+
+/* One-tap reset: all three segment boxes back to Unknown. */
+function resetSegments() {
+  [1, 2, 3].forEach(function (n) {
+    pred['seg' + n] = { mode: 'unknown', track: null, chance: 50 };
+    renderPredictSeg(n);
+  });
+  renderPrediction();
 }
 
 function renderOddsBox() {
@@ -596,15 +649,15 @@ function renderPrediction() {
     return;
   }
 
-  if (pred.vehicles.length !== 3 || !pred.seg1) {
-    panel.innerHTML = '<p class="result-empty">Pick 3 vehicles and the first track to see the prediction.</p>';
+  if (pred.vehicles.length !== 3) {
+    panel.innerHTML = '<p class="result-empty">Pick 3 vehicles to see the prediction.</p>';
     return;
   }
 
   var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
   var result = computePrediction({
     vehicles: pred.vehicles,
-    seg1: pred.seg1,
+    seg1Hint: pred.seg1,
     seg2Hint: pred.seg2,
     seg3Hint: pred.seg3,
     speeds: speeds,
@@ -613,11 +666,17 @@ function renderPrediction() {
   var t1 = (typeof performance !== 'undefined') ? performance.now() : 0;
   var ms = Math.max(0, Math.round(t1 - t0));
 
+  var knownSegs = pinnedSegments([pred.seg1, pred.seg2, pred.seg3]);
+  var knownParts = [];
+  Object.keys(knownSegs).forEach(function (k) {
+    knownParts.push('Seg ' + (parseInt(k, 10) + 1) + ' ' + knownSegs[k]);
+  });
   var top = result.ranked.slice(0, 2);
-  var html = '<div class="result-title">Top picks — ' + pred.seg1 + ' first</div>';
+  var html = '<div class="result-title">Top picks' +
+    (knownParts.length ? ' — known: ' + knownParts.join(', ') : ' — all segments unknown') + '</div>';
   top.forEach(function (r, idx) {
     var others = pred.vehicles.filter(function (v) { return v !== r.vehicle; });
-    var reason = buildReason(r.vehicle, others, pred.seg1, result.dist2, result.dist3, speeds);
+    var reason = buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
     var pct = Math.round(r.prob * 100);
     var oddsTxt = pred.odds[r.vehicle] ? ' · Odds ' + pred.odds[r.vehicle].toFixed(1) : '';
     html += '<div class="result-card rank-' + (idx + 1) + '">' +
@@ -633,7 +692,8 @@ function renderPrediction() {
     ' · computed in ' + ms + ' ms</div>';
   panel.innerHTML = html;
 
-  line.textContent = 'Assumed hidden tracks — Seg 2: ' + formatDist(result.dist2) +
+  line.textContent = 'Assumed tracks — Seg 1: ' + formatDist(result.dist1) +
+    ' · Seg 2: ' + formatDist(result.dist2) +
     ' · Seg 3: ' + formatDist(result.dist3) +
     '. These are probabilities from saved races and your hints, not certainties.';
 }
@@ -706,7 +766,7 @@ function renderLogSegments() {
     renderTrackRow('logSeg' + (idx + 1), logForm.tracks[idx], function (t) {
       logForm.tracks[idx] = t;
       renderLogSegments();
-    }, false);
+    }, true); // every segment offers "? Unknown", default Unknown
   });
 }
 
@@ -803,14 +863,15 @@ function resetLogForm() {
 
 async function saveRace() {
   if (logForm.vehicles.length !== 3) { toast('Pick 3 vehicles first.'); return; }
-  if (logForm.tracks.some(function (t) { return !t; })) { toast('Pick all 3 segment tracks.'); return; }
   if (!logForm.winner) { toast('Pick the winner.'); return; }
   if (!logForm.howWon) { toast('Pick how it won.'); return; }
   var howText = logForm.howWon === 'Other' ? ($('logHowText').value || '').trim() : '';
   var race = {
     id: logForm.editId || ('local-' + Date.now() + '-' + Math.floor(Math.random() * 1000)),
     vehicles: logForm.vehicles.slice(),
-    tracks: logForm.tracks.slice(),
+    // Unknown segments are stored as the real value 'unknown' — never
+    // converted to a guessed track type.
+    tracks: normalizeTracksForSave(logForm.tracks),
     patterns: logForm.patterns.slice(),
     winner: logForm.winner,
     how_won: logForm.howWon,
@@ -833,7 +894,7 @@ async function saveRace() {
   saveLocalRaces();
   resetLogForm();
   renderRaceList();
-  renderPrediction(); // new data changes hidden-track probabilities
+  renderPrediction(); // new data changes track probabilities
 }
 
 function renderRaceList() {
@@ -858,7 +919,8 @@ function renderRaceList() {
     editBtn.addEventListener('click', function () {
       logForm = {
         vehicles: (r.vehicles || []).slice(),
-        tracks: (r.tracks || []).slice(),
+        // Stored 'unknown' segments come back as null (Unknown) in the form.
+        tracks: (r.tracks || []).map(function (t) { return t === UNKNOWN_TRACK ? null : t; }),
         patterns: (r.patterns || []).slice(),
         winner: r.winner,
         howWon: r.how_won,
@@ -964,7 +1026,7 @@ function renderStats() {
   var colors = ['#ffd21f', '#8b3dff', '#2ecc71', '#ff8a5a', '#4fc3f7', '#e84393'];
   [0, 1, 2].forEach(function (i) {
     var wrap = el('div', 'freq-row');
-    wrap.appendChild(el('h4', null, 'Segment ' + (i + 1) + (i === 0 ? ' (visible)' : ' (hidden)')));
+    wrap.appendChild(el('h4', null, 'Segment ' + (i + 1)));
     var bar = el('div', 'freq-bar');
     var total = s.total || 1;
     TRACKS.forEach(function (t, ti) {
@@ -1028,6 +1090,13 @@ function parseCsvLine(line) {
   return out;
 }
 
+/* A saved race's 3 tracks are valid when each is one of the 6 track types
+   or the real value 'unknown'. */
+function isValidRaceTracks(tracks) {
+  return Array.isArray(tracks) && tracks.length === 3 &&
+    tracks.every(function (t) { return TRACKS.indexOf(t) !== -1 || t === UNKNOWN_TRACK; });
+}
+
 async function importCsv(file) {
   var text = await file.text();
   var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length; });
@@ -1043,7 +1112,7 @@ async function importCsv(file) {
     var winner = (c[idx.winner] || '').trim();
     var ok = vehicles.length === 3 &&
       vehicles.every(function (v) { return vehicleByName(v); }) &&
-      tracks.every(function (t) { return TRACKS.indexOf(t) !== -1; }) &&
+      isValidRaceTracks(tracks) &&
       vehicles.indexOf(winner) !== -1;
     if (!ok) { skipped += 1; continue; }
     var race = {
@@ -1249,9 +1318,9 @@ function init() {
   });
 
   renderPredictVehicles();
-  renderSeg1();
-  renderHiddenSeg(2);
-  renderHiddenSeg(3);
+  renderPredictSeg(1);
+  renderPredictSeg(2);
+  renderPredictSeg(3);
   renderOddsBox();
   renderPrediction();
   renderLogForm();
@@ -1261,6 +1330,7 @@ function init() {
   renderTimer();
 
   $('timerBtn').addEventListener('click', startTimer);
+  $('resetSegsBtn').addEventListener('click', resetSegments);
   $('saveRaceBtn').addEventListener('click', saveRace);
   $('cancelEditBtn').addEventListener('click', function () { resetLogForm(); });
   $('logHowText').addEventListener('input', function (e) { logForm.howWonText = e.target.value; });
@@ -1304,9 +1374,13 @@ if (typeof module !== 'undefined' && module.exports) {
     VEHICLES: VEHICLES,
     TRACKS: TRACKS,
     DEFAULT_SPEEDS: DEFAULT_SPEEDS,
+    UNKNOWN_TRACK: UNKNOWN_TRACK,
+    normalizeTracksForSave: normalizeTracksForSave,
+    isValidRaceTracks: isValidRaceTracks,
     computePrediction: computePrediction,
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
+    pinnedSegments: pinnedSegments,
     buildReason: buildReason
   };
 }
