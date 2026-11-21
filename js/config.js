@@ -28,6 +28,16 @@ var LRP_CONFIG = {
   // back to equal thirds [1/3, 1/3, 1/3].
   SEGMENT_LENGTHS: [0.189, 0.511, 0.300],
 
+  // Odds blend: how much the game's odds move the prediction %.
+  // The odds imply a chance for each vehicle: (1 / odds), normalised
+  // across the 3 picked vehicles — higher odds = lower implied chance
+  // (the game pays more on the vehicle it thinks is less likely).
+  // Final % = (1 - ODDS_BLEND_WEIGHT) * track+speed+history %
+  //         + ODDS_BLEND_WEIGHT * odds-implied %.
+  // 0.5 = half and half. Changing the odds on the Predict tab now
+  // moves the shown % live — and can flip MAIN / BACKUP.
+  ODDS_BLEND_WEIGHT: 0.5,
+
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.
   // NOTE: for the admin panel's database reads/writes to work, the admin
