@@ -172,11 +172,27 @@ keeps growing.
 ## Subscriptions (Premium)
 
 - Users sign up with email + password (Supabase Auth).
-- **The whole app is premium-only:** without an active subscription the
-  Predict, Log Race, Stats and Speeds tabs all show a locked screen
-  ("Premium required — subscriptions end at the end of each calendar
-  month — ask the owner to grant you premium"). The Account tab always
-  stays open (sign in, subscription status, admin panel).
+- **Free-use window (21-24 Nov 2026):** every signed-in user can use
+  the app free until **24 Nov 2026, 23:59 PKT** (`FREE_UNTIL` in
+  `js/config.js`, `2026-11-24T18:59:59.000Z` UTC). After the cutoff,
+  premium is required — anyone who creates an account after 24 Nov gets
+  **no** free usage and hits the lock immediately unless they have
+  premium. The check uses the device clock (a user could fiddle it;
+  a server-time check can be added later if the owner wants it).
+- **The whole app is premium-only after the free window:** without an
+  active subscription the Predict, Log Race, Stats and Speeds tabs all
+  show a locked screen ("Premium required — Free use ended on 24 Nov —
+  Buy Premium (Rs 3,000)"). The Account tab always stays open (sign in,
+  subscription status, admin panel).
+- **Buying premium — WhatsApp, no payment page:** the "Buy Premium
+  (Rs 3,000)" button (lock panel + Account tab) opens an in-app view
+  with the owner's WhatsApp number **+92 308 7215460** (shown as plain
+  text, so it can be copied manually) and a "Contact on WhatsApp"
+  button that opens `https://wa.me/923087215460` in a new tab with a
+  prefilled message ("Assalam-o-Alaikum, I want to buy Lucky Race
+  Predictor Premium (Rs 3,000)." plus "My username is \<username\>." when
+  the user has a username). The owner then grants premium from his
+  account. The button is never dead and never goes to a payment page.
 - A subscription is a row in `subscriptions` with `expires_at`. **Every
   subscription automatically expires at the end of the calendar month**
   (the app checks `expires_at < now` on each use).
