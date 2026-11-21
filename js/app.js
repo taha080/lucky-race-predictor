@@ -42,15 +42,15 @@
 var TRACKS = ['Expressway', 'Highway', 'Desert', 'Bumpy', 'Potholes', 'Dirt'];
 
 var VEHICLES = [
-  { name: 'ORV',           winRate: 42.1, odds: 2.3, color: '#8a9a3b', glyph: 'car' },
-  { name: 'Monster Truck', winRate: 41.7, odds: 2.4, color: '#2e9e4f', glyph: 'big' },
-  { name: 'SUV',           winRate: 37.1, odds: 2.6, color: '#8e44ad', glyph: 'car' },
-  { name: 'Stock Car',     winRate: 36.7, odds: 2.7, color: '#e67e22', glyph: 'car' },
-  { name: 'Car',           winRate: 36.6, odds: 2.7, color: '#e84393', glyph: 'car' },
-  { name: 'ATV',           winRate: 30.0, odds: 3.3, color: '#e74c3c', glyph: 'car' },
+  { name: 'ORV',           winRate: 42.1, odds: 2.3, color: '#8a9a3b', glyph: 'orv' },
+  { name: 'Monster Truck', winRate: 41.7, odds: 2.4, color: '#2e9e4f', glyph: 'monster' },
+  { name: 'SUV',           winRate: 37.1, odds: 2.6, color: '#8e44ad', glyph: 'suv' },
+  { name: 'Stock Car',     winRate: 36.7, odds: 2.7, color: '#e67e22', glyph: 'stock' },
+  { name: 'Car',           winRate: 36.6, odds: 2.7, color: '#e84393', glyph: 'sedan' },
+  { name: 'ATV',           winRate: 30.0, odds: 3.3, color: '#e74c3c', glyph: 'atv' },
   { name: 'Motorcycle',    winRate: 29.0, odds: 3.4, color: '#27ae60', glyph: 'bike' },
-  { name: 'Sports Car',    winRate: 26.3, odds: 3.7, color: '#2980b9', glyph: 'car' },
-  { name: 'Supercar',      winRate: 19.8, odds: 5.0, color: '#bdc3c7', glyph: 'car' }
+  { name: 'Sports Car',    winRate: 26.3, odds: 3.7, color: '#2980b9', glyph: 'sport' },
+  { name: 'Supercar',      winRate: 19.8, odds: 5.0, color: '#bdc3c7', glyph: 'super' }
 ];
 
 var DEFAULT_SPEEDS = {
@@ -755,9 +755,101 @@ function showTab(name) {
   window.scrollTo(0, 0);
 }
 
+/* Vehicle pictures — detailed ORIGINAL illustrations drawn in-code as
+   inline SVG (game art is copyrighted: no screenshots, no copied art).
+   Each vehicle has its own shape in its own colour, with glass, lights,
+   shadow and tread; body uses currentColor, shared classes (.w, .hub,
+   .glass, .light, .tread, ...) are styled in style.css. viewBox 0 0 120 64. */
+var GLYPH_SVG = {
+  sedan: '<ellipse class="shadow" cx="60" cy="58" rx="50" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M8 46 L13 33 Q15 29 21 28 L35 25 Q43 13 59 12 L79 12 Q93 14 101 25 L109 28 Q116 30 116 37 L116 46 Q116 49 112 49 L10 49 Q8 49 8 46 Z"/>' +
+    '<path class="glass" d="M40 25 Q46 15 58 14 L74 14 Q86 15 92 25 Z"/>' +
+    '<path class="shine" d="M48 23 L56 15 L60 15 L52 23 Z"/>' +
+    '<path class="line" d="M62 26 L62 46"/>' +
+    '<circle class="light" cx="112" cy="38" r="3"/>' +
+    '<circle class="tail" cx="10" cy="38" r="2.5"/>' +
+    '<circle class="w" cx="32" cy="49" r="9"/><circle class="w" cx="92" cy="49" r="9"/>' +
+    '<circle class="hub" cx="32" cy="49" r="3.5"/><circle class="hub" cx="92" cy="49" r="3.5"/>',
+  suv: '<ellipse class="shadow" cx="60" cy="58" rx="52" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M8 48 L10 27 Q11 23 16 22 L27 20 Q33 9 47 9 L86 9 Q97 9 101 19 L105 22 Q114 24 114 33 L114 48 Q114 51 110 51 L10 51 Q8 51 8 48 Z"/>' +
+    '<path class="rail" d="M34 9 L34 5 M84 9 L84 5 M30 5 L88 5"/>' +
+    '<path class="glass" d="M32 20 Q37 11 47 11 L82 11 Q92 11 95 20 Z"/>' +
+    '<path class="shine" d="M40 18 L48 12 L52 12 L44 18 Z"/>' +
+    '<path class="line" d="M60 22 L60 48"/>' +
+    '<circle class="light" cx="110" cy="36" r="3"/>' +
+    '<circle class="tail" cx="11" cy="36" r="2.5"/>' +
+    '<circle class="w" cx="30" cy="51" r="10"/><circle class="w" cx="92" cy="51" r="10"/>' +
+    '<circle class="hub" cx="30" cy="51" r="4"/><circle class="hub" cx="92" cy="51" r="4"/>',
+  sport: '<ellipse class="shadow" cx="60" cy="58" rx="50" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M6 48 L15 38 Q19 34 27 33 L47 30 Q57 18 73 18 L87 18 Q101 20 107 30 L113 34 Q118 36 118 42 L118 48 Q118 51 114 51 L8 51 Q6 51 6 48 Z"/>' +
+    '<path class="glass" d="M52 30 Q60 20 72 20 L84 20 Q94 21 99 30 Z"/>' +
+    '<path class="shine" d="M58 28 L66 21 L70 21 L62 28 Z"/>' +
+    '<path class="line" d="M100 40 Q106 40 110 44"/>' +
+    '<ellipse class="light" cx="112" cy="40" rx="4" ry="2.5"/>' +
+    '<circle class="w" cx="34" cy="51" r="8"/><circle class="w" cx="94" cy="51" r="8"/>' +
+    '<circle class="hub" cx="34" cy="51" r="3"/><circle class="hub" cx="94" cy="51" r="3"/>',
+  super: '<ellipse class="shadow" cx="60" cy="58" rx="52" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M4 38 L20 31 L22 35 L6 42 Z"/>' +
+    '<path class="bd" fill="currentColor" d="M4 50 L17 40 Q23 36 35 34 L55 30 Q69 20 87 20 L95 20 Q107 22 111 30 L116 36 Q119 40 119 46 L119 50 Q119 52 116 52 L6 52 Q4 52 4 50 Z"/>' +
+    '<path d="M6 46 L114 46 L114 50 Q114 52 112 52 L8 52 Q6 52 6 50 Z" fill="rgba(0,0,0,.12)"/>' +
+    '<path class="glass" d="M60 30 Q70 22 85 22 L92 22 Q100 23 104 30 Z"/>' +
+    '<path class="shine" d="M66 28 L74 23 L78 23 L70 28 Z"/>' +
+    '<path class="light" d="M108 38 Q114 38 116 42 L110 43 Q106 42 106 40 Z"/>' +
+    '<circle class="w" cx="34" cy="52" r="8"/><circle class="w" cx="94" cy="52" r="8"/>' +
+    '<circle class="hub" cx="34" cy="52" r="3"/><circle class="hub" cx="94" cy="52" r="3"/>',
+  stock: '<ellipse class="shadow" cx="60" cy="58" rx="50" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M8 36 L22 30 L24 34 L10 40 Z"/>' +
+    '<path class="bd" fill="currentColor" d="M8 46 L13 33 Q15 29 21 28 L35 25 Q43 13 59 12 L79 12 Q93 14 101 25 L109 28 Q116 30 116 37 L116 46 Q116 49 112 49 L10 49 Q8 49 8 46 Z"/>' +
+    '<path class="glass" d="M40 25 Q46 15 58 14 L74 14 Q86 15 92 25 Z"/>' +
+    '<circle cx="62" cy="35" r="8.5" fill="#ffffff" stroke="rgba(0,0,0,.2)"/>' +
+    '<text x="62" y="39" font-size="11" font-weight="900" text-anchor="middle" fill="#101a3a">7</text>' +
+    '<circle class="light" cx="112" cy="38" r="3"/>' +
+    '<circle class="tail" cx="10" cy="38" r="2.5"/>' +
+    '<circle class="w" cx="32" cy="49" r="9"/><circle class="w" cx="92" cy="49" r="9"/>' +
+    '<circle class="hub" cx="32" cy="49" r="3.5"/><circle class="hub" cx="92" cy="49" r="3.5"/>',
+  orv: '<ellipse class="shadow" cx="60" cy="58" rx="52" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M8 48 L12 32 Q14 28 20 27 L30 25 Q36 12 52 12 L84 12 Q96 14 100 25 L110 28 Q116 30 116 38 L116 48 Q116 51 112 51 L10 51 Q8 51 8 48 Z"/>' +
+    '<path class="rack" d="M44 12 L44 5 M88 12 L88 5 M38 5 L94 5"/>' +
+    '<path class="glass" d="M36 25 Q42 14 52 14 L80 14 Q90 15 94 25 Z"/>' +
+    '<path class="shine" d="M44 23 L52 15 L56 15 L48 23 Z"/>' +
+    '<path class="line" d="M60 26 L60 48"/>' +
+    '<path class="line" d="M110 34 L110 46 M114 36 L114 44"/>' +
+    '<circle class="light" cx="111" cy="37" r="3"/>' +
+    '<circle class="tail" cx="11" cy="37" r="2.5"/>' +
+    '<circle class="w" cx="30" cy="51" r="10"/><circle class="w" cx="92" cy="51" r="10"/>' +
+    '<circle class="hub" cx="30" cy="51" r="4"/><circle class="hub" cx="92" cy="51" r="4"/>',
+  atv: '<ellipse class="shadow" cx="60" cy="58" rx="50" ry="4"/>' +
+    '<path class="bd" fill="currentColor" d="M16 44 L22 30 Q24 26 30 26 L46 24 Q52 14 64 14 L80 14 Q92 16 96 26 L106 28 Q114 30 114 38 L114 44 Q114 47 110 47 L18 47 Q16 47 16 44 Z"/>' +
+    '<path d="M46 24 L40 15" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>' +
+    '<path d="M60 22 L76 22" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>' +
+    '<circle class="w" cx="32" cy="47" r="11"/><circle class="tread" cx="32" cy="47" r="11"/>' +
+    '<circle class="w" cx="92" cy="47" r="11"/><circle class="tread" cx="92" cy="47" r="11"/>' +
+    '<circle class="hub" cx="32" cy="47" r="4"/><circle class="hub" cx="92" cy="47" r="4"/>',
+  monster: '<ellipse class="shadow" cx="60" cy="58" rx="54" ry="4.5"/>' +
+    '<path class="bd" fill="currentColor" d="M12 40 L16 24 Q18 20 24 20 L34 18 Q40 8 54 8 L82 8 Q94 10 98 20 L106 22 Q114 24 114 32 L114 40 Q114 43 110 43 L14 43 Q12 43 12 40 Z"/>' +
+    '<path class="glass" d="M38 18 Q44 10 54 10 L78 10 Q88 10 92 18 Z"/>' +
+    '<path class="shine" d="M46 16 L52 11 L56 11 L50 16 Z"/>' +
+    '<path class="line" d="M30 43 L30 37 M88 43 L88 37"/>' +
+    '<circle class="light" cx="110" cy="32" r="3"/>' +
+    '<circle class="tail" cx="14" cy="32" r="2.5"/>' +
+    '<circle class="w" cx="34" cy="45" r="14"/><circle class="tread" cx="34" cy="45" r="14"/>' +
+    '<circle class="w" cx="90" cy="45" r="14"/><circle class="tread" cx="90" cy="45" r="14"/>' +
+    '<circle class="hub" cx="34" cy="45" r="5"/><circle class="hub" cx="90" cy="45" r="5"/>',
+  bike: '<ellipse class="shadow" cx="60" cy="58" rx="48" ry="4"/>' +
+    '<path class="glass" d="M50 24 L44 12 L50 12 L56 24 Z"/>' +
+    '<path d="M28 48 L54 26 L86 26 L92 48" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M54 26 L46 15" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>' +
+    '<path d="M60 24 L78 24" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>' +
+    '<circle cx="58" cy="38" r="5" fill="currentColor"/>' +
+    '<path d="M80 46 L96 44" fill="none" stroke="#9aa3b2" stroke-width="3" stroke-linecap="round"/>' +
+    '<circle class="light" cx="88" cy="28" r="2.5"/>' +
+    '<circle class="w" cx="28" cy="48" r="11"/><circle class="w" cx="92" cy="48" r="11"/>' +
+    '<circle class="hub" cx="28" cy="48" r="4"/><circle class="hub" cx="92" cy="48" r="4"/>'
+};
+
 function glyphHtml(v) {
-  return '<div class="glyph ' + v.glyph + '" style="--c:' + v.color + '">' +
-    '<i class="body"></i><i class="cab"></i><i class="bar"></i><i class="w1"></i><i class="w2"></i></div>';
+  return '<svg class="v-glyph" viewBox="0 0 120 64" style="color:' + v.color + '" aria-hidden="true">' +
+    (GLYPH_SVG[v.glyph] || GLYPH_SVG.sedan) + '</svg>';
 }
 
 /* ============================================================================
