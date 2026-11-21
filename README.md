@@ -143,18 +143,26 @@ speed table live in `localStorage` and predictions work with no account.
    the big highlighted **MAIN PICK**, and #2 below it as the smaller
    **BACKUP PICK**.
 
-## Subscriptions
+## Subscriptions (Premium)
 
 - Users sign up with email + password (Supabase Auth).
-- Predictions are gated: without an active subscription the Predict tab
-  shows a locked screen.
+- **The whole app is premium-only:** without an active subscription the
+  Predict, Log Race, Stats and Speeds tabs all show a locked screen
+  ("Premium required — subscriptions end at the end of each calendar
+  month — ask the owner to grant you premium"). The Account tab always
+  stays open (sign in, subscription status, admin panel).
 - A subscription is a row in `subscriptions` with `expires_at`. **Every
   subscription automatically expires at the end of the calendar month**
-  (the app checks `expires_at < now` on each prediction attempt).
-- **Admins** (email in `js/config.js` `ADMIN_EMAILS` **and**
-  `profiles.is_admin = true` in the database) can grant a subscription to
-  any user (sets `expires_at` to the end of the current month) or revoke it,
-  from the Account tab.
+  (the app checks `expires_at < now` on each use).
+- **Owner (admin) access is permanent:** admins (email in `js/config.js`
+  `ADMIN_EMAILS` **and** `profiles.is_admin = true` in the database)
+  bypass every subscription check entirely — the owner never needs a
+  subscription and no expiry is checked for admins. The Account tab shows
+  a distinct **Owner** card (email + OWNER badge) at the top for admins.
+- **Admins** can grant premium to any user from their own account (sets
+  `expires_at` to the end of the current month) or revoke it, from the
+  Account tab's "Grant premium" users list. Revoking blocks the whole app
+  for that user immediately.
 
 ## Tech
 
