@@ -135,13 +135,23 @@ var HISTORY_BLEND_MIN_MATCHES = 5;   // need >= 5 races of the same set + seg1
 /* ---------------- Config / environment ------------------------------------ */
 
 var CONFIG = (typeof window !== 'undefined' && window.LRP_CONFIG) ? window.LRP_CONFIG : {};
-var DEMO_MODE = !CONFIG.SUPABASE_URL || CONFIG.SUPABASE_URL.indexOf('YOUR_') === 0;
+/* Configured = a real Supabase project is set in js/config.js. Demo mode
+   applies ONLY when the config is genuinely unconfigured (placeholders).
+   If the project IS configured but the Supabase library fails to load,
+   the app must NOT silently fall back to unlocked demo mode (that would
+   let anyone use the full app by blocking the CDN) — see sbLoadFailed. */
+var SUPABASE_CONFIGURED = !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_URL.indexOf('YOUR_') !== 0);
+var DEMO_MODE = !SUPABASE_CONFIGURED;
 
 var sb = null;          // Supabase client (null in demo mode)
+var sbLoadFailed = false; // configured, but the Supabase JS library did not load
 var currentUser = null; // { id, email } when signed in (Supabase mode)
+var currentUsername = null; // the signed-in user's username (profiles.username)
 var isAdmin = false;
 var subActive = false;  // active subscription? (demo mode: always true)
 var subExpiresAt = null;
+var recoveryMode = false; // a PASSWORD_RECOVERY session is active: show set-password form
+var authLinkError = null; // parsed from the URL hash: an expired/invalid auth link
 
 /* ---------------- Local state ---------------------------------------------- */
 
@@ -209,6 +219,46 @@ function toast(msg) {
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function () { t.classList.add('hidden'); }, 2600);
+}
+
+/* Usernames: 3-20 characters, letters, numbers and underscore only.
+   Uniqueness is case-insensitive (citext in the database). Returns
+   { ok: true } or { ok: false, reason: '...' }. */
+function validateUsername(name) {
+  var v = (name || '').trim();
+  if (!v) return { ok: false, reason: 'Enter a username.' };
+  if (v.length < 3 || v.length > 20) return { ok: false, reason: 'Username must be 3-20 characters.' };
+  if (!/^[A-Za-z0-9_]+$/.test(v)) return { ok: false, reason: 'Username may only use letters, numbers and _.' };
+  return { ok: true, value: v };
+}
+
+/* The URL to send the user back to after an auth email link (confirmation
+   or password recovery). Only for http(s) pages — never for file://. */
+function authRedirectUrl() {
+  if (typeof window === 'undefined' || !window.location) return undefined;
+  if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return undefined;
+  return window.location.origin + window.location.pathname;
+}
+
+/* Supabase puts auth-link errors in the URL hash, e.g.
+   #error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired
+   Parse them so the app can explain the problem instead of silently
+   showing the locked screen. */
+function parseAuthHashError() {
+  if (typeof window === 'undefined' || !window.location.hash) return null;
+  var params = new URLSearchParams(window.location.hash.substring(1));
+  var err = params.get('error');
+  if (!err) return null;
+  return { error: err, code: params.get('error_code'), desc: params.get('error_description') };
+}
+
+/* Remove the auth hash from the address bar (it can contain a live
+   access token after a confirmation/recovery link — it must not linger
+   where it can be copied or logged). */
+function clearAuthHash() {
+  if (typeof window === 'undefined' || !window.history || !window.history.replaceState) return;
+  if (!window.location.hash) return;
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
 /* ============================================================================
@@ -482,6 +532,10 @@ function formatDist(dist) {
 
 var LS_RACES = 'lrp_races_v1';
 var LS_SPEEDS = 'lrp_speeds_v1';
+/* Owner tag for the local race cache: the cache belongs to one user id.
+   Without it, a second user signing in on the same browser could be
+   shown the previous user's races if the cloud sync failed. */
+var LS_RACES_OWNER = 'lrp_races_owner_v1';
 
 function lsGet(key) {
   try {
@@ -501,7 +555,21 @@ function loadLocalRaces() {
     return raw ? JSON.parse(raw) : [];
   } catch (e) { return []; }
 }
-function saveLocalRaces() { lsSet(LS_RACES, JSON.stringify(races)); }
+function saveLocalRaces() {
+  lsSet(LS_RACES, JSON.stringify(races));
+  lsSet(LS_RACES_OWNER, currentUser ? currentUser.id : '');
+}
+
+/* Drop the local race cache when it belongs to a different user than the
+   one now signed in (or when signed out). Call after refreshSession(). */
+function discardStaleRaceCache() {
+  if (DEMO_MODE) return;
+  var owner = lsGet(LS_RACES_OWNER);
+  if (owner && (!currentUser || owner !== currentUser.id)) {
+    races = [];
+    saveLocalRaces();
+  }
+}
 function loadLocalSpeeds() {
   try {
     var raw = lsGet(LS_SPEEDS);
@@ -522,15 +590,52 @@ function saveLocalSpeeds() { lsSet(LS_SPEEDS, JSON.stringify(speeds)); }
 function initSupabase() {
   if (DEMO_MODE) return;
   if (typeof window === 'undefined' || !window.supabase) {
-    console.warn('Supabase JS not loaded — running in demo mode.');
-    DEMO_MODE = true;
+    /* SECURITY: the project IS configured, but the Supabase library did
+       not load (CDN blocked/offline). Do NOT fall back to unlocked demo
+       mode — that would let anyone use the full app by blocking the CDN.
+       Stay locked and tell the user to reload. */
+    console.warn('Supabase JS not loaded — staying locked (not demo mode).');
+    sbLoadFailed = true;
     return;
   }
   sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+  /* Listen for auth events the app must react to:
+     - PASSWORD_RECOVERY: the user arrived from a password-recovery email
+       link — show the "Set new password" form.
+     - SIGNED_OUT: reset to the signed-out state immediately (e.g. the
+       session was revoked elsewhere). */
+  sb.auth.onAuthStateChange(function (event, session) {
+    if (event === 'PASSWORD_RECOVERY') {
+      recoveryMode = true;
+      if (session && session.user) currentUser = session.user;
+      clearAuthHash();
+      /* Refresh admin/subscription state so the first paint is correct,
+         then show the set-new-password form. */
+      checkAdmin().then(function () { return checkSubscription(); }).then(function () {
+        showTab('account');
+        renderAccount();
+        applyTabLocks();
+      });
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
+      recoveryMode = false;
+      races = []; saveLocalRaces();
+      renderAccount();
+      renderPrediction();
+      applyTabLocks();
+    }
+  });
 }
 
 async function refreshSession() {
-  if (!sb) { subActive = true; return; } // demo mode: predictions unlocked
+  if (!sb) {
+    if (SUPABASE_CONFIGURED) {
+      /* Library failed to load on a configured site: locked, no session. */
+      currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
+      return;
+    }
+    subActive = true; return; // demo mode: predictions unlocked
+  }
   var res = await sb.auth.getSession();
   var session = res && res.data ? res.data.session : null;
   currentUser = session ? session.user : null;
@@ -541,18 +646,20 @@ async function refreshSession() {
 
 async function checkAdmin() {
   isAdmin = false;
+  currentUsername = null;
   if (!currentUser) return;
   if ((CONFIG.ADMIN_EMAILS || []).indexOf(currentUser.email) !== -1) isAdmin = true;
   try {
-    var res = await sb.from('profiles').select('is_admin').eq('id', currentUser.id).maybeSingle();
-    if (res && res.data && res.data.is_admin) isAdmin = true;
+    var res = await sb.from('profiles').select('is_admin, username').eq('id', currentUser.id).maybeSingle();
+    if (res && res.data) {
+      if (res.data.is_admin) isAdmin = true;
+      currentUsername = res.data.username || null;
+    }
   } catch (e) { /* profiles table may not exist yet — config list still works for UI */ }
 }
 
 async function checkSubscription() {
-  subActive = false;
-  subExpiresAt = null;
-  if (!currentUser) return;
+  if (!currentUser) { subActive = false; subExpiresAt = null; return; }
   try {
     var res = await sb.from('subscriptions')
       .select('expires_at')
@@ -562,22 +669,31 @@ async function checkSubscription() {
       .order('expires_at', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (res && res.data) {
+    if (res.error) throw new Error(res.error.message);
+    if (res.data) {
       subActive = true;
       subExpiresAt = res.data.expires_at;
+    } else {
+      subActive = false;
+      subExpiresAt = null;
     }
-  } catch (e) { /* subscriptions table missing — treat as no subscription */ }
+  } catch (e) {
+    /* Network/table error: keep the previous subscription state instead
+       of locking a paying user out on a blip. The next check retries. */
+    console.warn('Subscription check failed:', e);
+  }
 }
 
-/* Races: Supabase is the source of truth when signed in; localStorage is cache. */
+/* Races: Supabase is the source of truth when signed in; localStorage is cache.
+   Returns true when the cloud sync succeeded (or was not needed). */
 async function syncRacesFromCloud() {
-  if (!sb || !currentUser) return;
+  if (!sb || !currentUser) return true;
   try {
     var res = await sb.from('races')
       .select('*')
       .eq('user_id', currentUser.id)
       .order('created_at', { ascending: false });
-    if (res.error) { console.warn('Race sync failed:', res.error.message); return; }
+    if (res.error) { console.warn('Race sync failed:', res.error.message); return false; }
     races = (res.data || []).map(function (r) {
       return {
         id: r.id, vehicles: r.vehicles, tracks: r.tracks, patterns: r.patterns || [],
@@ -586,11 +702,15 @@ async function syncRacesFromCloud() {
       };
     });
     saveLocalRaces();
-  } catch (e) { console.warn('Race sync failed:', e); }
+    return true;
+  } catch (e) { console.warn('Race sync failed:', e); return false; }
 }
 
 async function cloudInsertRace(race) {
   if (!sb || !currentUser) return null;
+  /* Premium gate at the data layer too: a non-premium user must not be
+     able to save races even by calling this from the console. */
+  if (!appAccess().ok) return null;
   var res = await sb.from('races').insert({
     user_id: currentUser.id,
     vehicles: race.vehicles,
@@ -606,6 +726,7 @@ async function cloudInsertRace(race) {
 }
 async function cloudUpdateRace(race) {
   if (!sb || !currentUser) return false;
+  if (!appAccess().ok) return false;
   var res = await sb.from('races').update({
     vehicles: race.vehicles, tracks: race.tracks, patterns: race.patterns,
     winner: race.winner, how_won: race.how_won, how_won_text: race.how_won_text,
@@ -615,6 +736,7 @@ async function cloudUpdateRace(race) {
 }
 async function cloudDeleteRace(id) {
   if (!sb || !currentUser) return false;
+  if (!appAccess().ok) return false;
   var res = await sb.from('races').delete().eq('id', id).eq('user_id', currentUser.id);
   return !res.error;
 }
@@ -785,6 +907,7 @@ function renderOddsBox() {
    live session state. Returns { ok: true } or
    { ok: false, reason: 'signin' | 'premium' }. */
 function appAccessFor(s) {
+  if (s.loadFailed) return { ok: false, reason: 'offline' };
   if (s.demo) return { ok: true };
   if (!s.user) return { ok: false, reason: 'signin' };
   if (s.admin) return { ok: true };
@@ -792,9 +915,14 @@ function appAccessFor(s) {
   return { ok: false, reason: 'premium' };
 }
 function appAccess() {
-  return appAccessFor({ demo: DEMO_MODE, admin: isAdmin, user: currentUser, sub: subActive });
+  return appAccessFor({ demo: DEMO_MODE, loadFailed: sbLoadFailed, admin: isAdmin, user: currentUser, sub: subActive });
 }
 function lockedHtml(reason) {
+  if (reason === 'offline') {
+    return '<div class="locked-panel"><h3>Could not reach the login server</h3>' +
+      '<p>The login service did not load. Check your connection and reload the page. Predictions stay locked until the server is reachable.</p>' +
+      '<button class="btn btn-yellow goto-account-btn">Go to Account</button></div>';
+  }
   return '<div class="locked-panel"><h3>Premium required</h3>' +
     (reason === 'signin'
       ? '<p>Sign in from the Account tab to use this app.</p>'
@@ -1114,7 +1242,11 @@ function renderRaceList() {
   races.slice(0, 100).forEach(function (r) {
     var item = el('div', 'race-item');
     var line1 = el('div', 'r-line');
-    line1.innerHTML = '<b>' + r.winner + '</b> won — ' + r.vehicles.join(' vs ');
+    /* Winner/vehicles are rendered as text, never as HTML: race data can
+       carry arbitrary strings (e.g. from a CSV import), and innerHTML
+       here would turn them into live markup. */
+    line1.appendChild(el('b', null, r.winner || ''));
+    line1.appendChild(document.createTextNode(' won — ' + (r.vehicles || []).join(' vs ')));
     var meta = el('div', 'r-meta',
       (r.tracks || []).join(' → ') +
       (r.patterns && r.patterns.length ? ' · Patterns: ' + r.patterns.join(', ') : '') +
@@ -1330,7 +1462,7 @@ async function importCsv(file) {
       patterns: (c[idx.patterns] || '').split('|').map(function (s) { return s.trim(); }).filter(function (s) { return TRACKS.indexOf(s) !== -1; }),
       winner: winner,
       how_won: (c[idx.how_won] || '').trim() || 'Other',
-      how_won_text: (c[idx.how_won_text] || '').trim(),
+      how_won_text: (c[idx.how_won_text] || '').trim().slice(0, 120),
       odds: {},
       created_at: (c[idx.created_at] || '').trim() || new Date().toISOString()
     };
@@ -1339,7 +1471,17 @@ async function importCsv(file) {
     // duplicate row earlier in the same file, since `races` grows as
     // rows are imported).
     if (isDuplicateRace(race, races)) { skipped += 1; continue; }
-    try { race.odds = JSON.parse(c[idx.odds] || '{}'); } catch (e) { race.odds = {}; }
+    try {
+      var rawOdds = JSON.parse(c[idx.odds] || '{}');
+      /* Keep only sane odds: known vehicles, finite numbers 1-20.
+         Anything else in the file is dropped, never stored. */
+      if (rawOdds && typeof rawOdds === 'object') {
+        Object.keys(rawOdds).forEach(function (k) {
+          var v = Number(rawOdds[k]);
+          if (vehicleByName(k) && isFinite(v) && v >= 1 && v <= 20) race.odds[k] = v;
+        });
+      }
+    } catch (e) { race.odds = {}; }
     var saved = await cloudInsertRace(race);
     if (saved) { race.id = saved.id; race.created_at = saved.created_at || race.created_at; }
     races.unshift(race);
@@ -1364,7 +1506,11 @@ function renderSpeedTable() {
   VEHICLES.forEach(function (v) {
     html += '<tr><td>' + v.name + '</td>';
     TRACKS.forEach(function (t) {
-      html += '<td><input type="number" min="1" max="999" step="1" value="' + speeds[v.name][t] +
+      /* Numbers only: a tampered localStorage value must never reach the
+         markup as raw text. */
+      var val = parseInt(speeds[v.name][t], 10);
+      if (!isFinite(val) || val < 1) val = DEFAULT_SPEEDS[v.name][t];
+      html += '<td><input type="number" min="1" max="999" step="1" value="' + val +
         '" data-vehicle="' + v.name + '" data-track="' + t + '"></td>';
     });
     html += '</tr>';
@@ -1406,27 +1552,132 @@ function renderAccount() {
     return;
   }
 
+  if (sbLoadFailed) {
+    var fail = el('div', 'acct-card');
+    fail.innerHTML = '<h3>Could not reach the login server</h3>' +
+      '<p>The login service did not load. Check your connection and reload the page. Nothing is unlocked until the server is reachable.</p>';
+    box.appendChild(fail);
+    return;
+  }
+
+  /* An expired / already-used email link: say so plainly, with a way to
+     request a new one, instead of silently showing the locked screen. */
+  if (authLinkError) {
+    var linkErr = el('div', 'acct-card');
+    var linkMsg = (authLinkError.code === 'otp_expired')
+      ? 'This link has expired or was already used. Request a new one below — links work once and expire quickly.'
+      : 'This sign-in link did not work' + (authLinkError.desc ? ': ' + authLinkError.desc : '.') + ' Request a new one below.';
+    linkErr.appendChild(el('h3', null, 'Sign-in link problem'));
+    linkErr.appendChild(el('p', null, linkMsg));
+    var dismiss = el('button', 'btn btn-ghost', 'Dismiss');
+    dismiss.addEventListener('click', function () { authLinkError = null; renderAccount(); });
+    linkErr.appendChild(dismiss);
+    box.appendChild(linkErr);
+  }
+
   if (!currentUser) {
     var auth = el('div', 'acct-card');
     auth.innerHTML = '<h3>Sign in</h3><p>Predictions need an account with an active subscription.</p>';
     var email = el('input', 'field'); email.type = 'email'; email.placeholder = 'Email'; email.id = 'authEmail';
     var pass = el('input', 'field'); pass.type = 'password'; pass.placeholder = 'Password (min 6 characters)'; pass.id = 'authPass';
+    var userField = el('input', 'field'); userField.type = 'text'; userField.placeholder = 'Username (optional, for new accounts)'; userField.id = 'authUsername';
+    userField.maxLength = 20;
+    /* Persistent inline message (stays visible, unlike the 2.6s toast)
+       so sign-up / sign-in / reset errors are actually read. */
+    var authMsg = el('p', 'help-text auth-msg');
+    authMsg.style.display = 'none';
+    function setAuthMsg(text) {
+      authMsg.textContent = text || '';
+      authMsg.style.display = text ? '' : 'none';
+    }
     var inBtn = el('button', 'btn btn-yellow btn-block', 'Sign in');
     var upBtn = el('button', 'btn btn-ghost btn-block', 'Create account');
+    var forgotBtn = el('button', 'btn btn-ghost btn-block', 'Forgot password?');
+    function setBusy(busy) {
+      inBtn.disabled = busy; upBtn.disabled = busy; forgotBtn.disabled = busy;
+    }
     inBtn.addEventListener('click', async function () {
-      var res = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
-      if (res.error) { toast(res.error.message); return; }
+      var em = email.value.trim();
+      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter a valid email address.'); return; }
+      if (!pass.value || pass.value.length < 6) { setAuthMsg('Password must be at least 6 characters.'); return; }
+      setAuthMsg(''); setBusy(true);
+      var res = await sb.auth.signInWithPassword({ email: em, password: pass.value });
+      setBusy(false);
+      if (res.error) {
+        var hint = /invalid login/i.test(res.error.message)
+          ? 'Wrong email or password — or the account is not confirmed yet. Check your inbox for the confirmation link, then try again.'
+          : res.error.message;
+        setAuthMsg(hint);
+        toast(res.error.message);
+        return;
+      }
+      authLinkError = null;
       await afterAuth();
     });
     upBtn.addEventListener('click', async function () {
-      var res = await sb.auth.signUp({ email: email.value.trim(), password: pass.value });
-      if (res.error) { toast(res.error.message); return; }
-      toast('Account created. Please sign in.');
+      var em = email.value.trim();
+      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter a valid email address.'); return; }
+      if (!pass.value || pass.value.length < 6) { setAuthMsg('Password must be at least 6 characters.'); return; }
+      var uname = userField.value.trim();
+      var meta = {};
+      if (uname) {
+        var check = validateUsername(uname);
+        if (!check.ok) { setAuthMsg(check.reason); return; }
+        meta.username = check.value;
+      }
+      setAuthMsg(''); setBusy(true);
+      var res = await sb.auth.signUp({
+        email: em, password: pass.value,
+        options: { data: meta, emailRedirectTo: authRedirectUrl() }
+      });
+      setBusy(false);
+      if (res.error) { setAuthMsg(res.error.message); toast(res.error.message); return; }
+      setAuthMsg('Account created. Check your email for the confirmation link, then sign in — the link opens this app and signs you in. If no email arrives, wait a little before trying again (only a few account emails can be sent per hour).');
+      toast('Account created — check your email.');
       await afterAuth();
     });
-    auth.appendChild(email); auth.appendChild(pass); auth.appendChild(inBtn); auth.appendChild(upBtn);
+    forgotBtn.addEventListener('click', async function () {
+      var em = email.value.trim();
+      if (!em || em.indexOf('@') === -1) { setAuthMsg('Enter your email above first, then tap "Forgot password?".'); return; }
+      setAuthMsg(''); setBusy(true);
+      var res = await sb.auth.resetPasswordForEmail(em, { redirectTo: authRedirectUrl() });
+      setBusy(false);
+      if (res.error) { setAuthMsg(res.error.message); toast(res.error.message); return; }
+      setAuthMsg('Reset link sent to ' + em + ' — check your inbox (and spam). The link signs you in and lets you set a new password. Only a few account emails can be sent per hour, so if you requested links recently, wait a bit before trying again.');
+      toast('Reset link sent — check your email.');
+    });
+    auth.appendChild(email); auth.appendChild(pass); auth.appendChild(userField);
+    auth.appendChild(inBtn); auth.appendChild(upBtn); auth.appendChild(forgotBtn);
+    auth.appendChild(authMsg);
     box.appendChild(auth);
     return;
+  }
+
+  /* Set-new-password form: shown when the user arrived from a password-
+     recovery email link (PASSWORD_RECOVERY session). This is how a user
+     sets a password after clicking a recovery link. */
+  if (recoveryMode) {
+    var rec = el('div', 'acct-card');
+    rec.appendChild(el('h3', null, 'Set a new password'));
+    rec.appendChild(el('p', null, 'You arrived from a password-reset link. Choose a new password below — you stay signed in.'));
+    var recPass = el('input', 'field'); recPass.type = 'password'; recPass.placeholder = 'New password (min 6 characters)';
+    var recPass2 = el('input', 'field'); recPass2.type = 'password'; recPass2.placeholder = 'Repeat new password';
+    var recMsg = el('p', 'help-text'); recMsg.style.display = 'none';
+    var recBtn = el('button', 'btn btn-yellow btn-block', 'Set new password');
+    recBtn.addEventListener('click', async function () {
+      if (!recPass.value || recPass.value.length < 6) { recMsg.textContent = 'Password must be at least 6 characters.'; recMsg.style.display = ''; return; }
+      if (recPass.value !== recPass2.value) { recMsg.textContent = 'The two passwords do not match.'; recMsg.style.display = ''; return; }
+      recBtn.disabled = true;
+      var recRes = await sb.auth.updateUser({ password: recPass.value });
+      recBtn.disabled = false;
+      if (recRes.error) { recMsg.textContent = recRes.error.message; recMsg.style.display = ''; toast(recRes.error.message); return; }
+      recoveryMode = false;
+      clearAuthHash();
+      toast('Password set. You are signed in.');
+      await afterAuth();
+    });
+    rec.appendChild(recPass); rec.appendChild(recPass2); rec.appendChild(recBtn); rec.appendChild(recMsg);
+    box.appendChild(rec);
   }
 
   /* Owner profile: a distinct card at the top of the Account tab for the
@@ -1434,25 +1685,33 @@ function renderAccount() {
      permanent — he never needs a subscription. */
   if (isAdmin) {
     var owner = el('div', 'acct-card owner-card');
-    owner.innerHTML = '<h3><span class="owner-badge">OWNER</span> ' + currentUser.email + '</h3>' +
-      '<p>Your access is permanent — as the owner you never need a subscription. ' +
-      'Grant premium to anyone from the users list below. Only users with an active subscription can use this app.</p>';
+    var oh = el('h3');
+    oh.appendChild(el('span', 'owner-badge', 'OWNER'));
+    oh.appendChild(document.createTextNode(' ' + currentUser.email));
+    owner.appendChild(oh);
+    owner.appendChild(el('p', null, 'Your access is permanent — as the owner you never need a subscription. Grant premium to anyone from the users list below. Only users with an active subscription can use this app.'));
     box.appendChild(owner);
   }
 
   var status = el('div', 'acct-card');
-  status.innerHTML = '<h3>' + currentUser.email + '</h3>' +
-    '<p>Subscription: ' + (subActive
-      ? '<span class="sub-active">Active until ' + fmtDate(subExpiresAt) + '</span>'
-      : (isAdmin
-        ? '<span class="sub-active">Owner — permanent access, no subscription needed</span>'
-        : '<span class="sub-expired">Expired / none</span> — subscriptions end at the end of each calendar month.')) + '</p>' +
-    (isAdmin ? '<p>You are the owner of this app.</p>' : '');
+  status.appendChild(el('h3', null, currentUser.email));
+  var subLine = el('p');
+  subLine.appendChild(document.createTextNode('Subscription: '));
+  subLine.appendChild(el('span', subActive ? 'sub-active' : (isAdmin ? 'sub-active' : 'sub-expired'),
+    subActive ? 'Active until ' + fmtDate(subExpiresAt)
+      : (isAdmin ? 'Owner — permanent access, no subscription needed'
+        : 'Expired / none — subscriptions end at the end of each calendar month.')));
+  status.appendChild(subLine);
+  if (isAdmin) status.appendChild(el('p', null, 'You are the owner of this app.'));
+  if (currentUsername) status.appendChild(el('p', null, 'Username: ' + currentUsername));
   var outBtn = el('button', 'btn btn-ghost', 'Sign out');
   outBtn.addEventListener('click', async function () {
     await sb.auth.signOut();
-    currentUser = null; subActive = false; isAdmin = false;
-    races = loadLocalRaces();
+    currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
+    recoveryMode = false;
+    /* Clear the local race cache on sign-out: it belongs to the user who
+       just left, and must not be shown to the next user on this browser. */
+    races = []; saveLocalRaces();
     renderAccount();
     renderPrediction();
     applyTabLocks();
@@ -1461,7 +1720,96 @@ function renderAccount() {
   status.appendChild(outBtn);
   box.appendChild(status);
 
+  /* Your username: shown to the owner in the admin panel and usable for
+     granting premium. Any signed-in user can set or change their own. */
+  var unameCard = el('div', 'acct-card');
+  unameCard.appendChild(el('h3', null, 'Your username'));
+  unameCard.appendChild(el('p', null, currentUsername
+    ? 'Your username is ' + currentUsername + '. The owner can grant you premium with it, and it shows in the admin users list.'
+    : 'No username set yet. Pick one (3-20 letters, numbers or _) so the owner can find you by username as well as by email.'));
+  var unameInput = el('input', 'field'); unameInput.type = 'text';
+  unameInput.placeholder = 'Username (3-20 letters, numbers, _)'; unameInput.maxLength = 20;
+  unameInput.value = currentUsername || '';
+  var unameMsg = el('p', 'help-text'); unameMsg.style.display = 'none';
+  var unameBtn = el('button', 'btn btn-yellow btn-block', 'Save username');
+  unameBtn.addEventListener('click', async function () {
+    var check = validateUsername(unameInput.value);
+    if (!check.ok) { unameMsg.textContent = check.reason; unameMsg.style.display = ''; return; }
+    unameBtn.disabled = true;
+    var upRes = await sb.from('profiles').update({ username: check.value }).eq('id', currentUser.id);
+    unameBtn.disabled = false;
+    if (upRes.error) {
+      var uMsg = upRes.error.message || '';
+      if (upRes.error.code === '23505' || /duplicate/i.test(uMsg)) uMsg = 'That username is taken — try another.';
+      unameMsg.textContent = uMsg; unameMsg.style.display = ''; toast(uMsg);
+      return;
+    }
+    currentUsername = check.value;
+    toast('Username saved.');
+    renderAccount();
+  });
+  unameCard.appendChild(unameInput); unameCard.appendChild(unameBtn); unameCard.appendChild(unameMsg);
+  box.appendChild(unameCard);
+
+  /* Change password while signed in — this is how the owner sets a
+     password after arriving from a confirmation-link session. */
+  var pwCard = el('div', 'acct-card');
+  pwCard.appendChild(el('h3', null, 'Change password'));
+  pwCard.appendChild(el('p', null, 'Set a new password for this account. You stay signed in.'));
+  var pwNew = el('input', 'field'); pwNew.type = 'password'; pwNew.placeholder = 'New password (min 6 characters)';
+  var pwNew2 = el('input', 'field'); pwNew2.type = 'password'; pwNew2.placeholder = 'Repeat new password';
+  var pwMsg = el('p', 'help-text'); pwMsg.style.display = 'none';
+  var pwBtn = el('button', 'btn btn-yellow btn-block', 'Change password');
+  pwBtn.addEventListener('click', async function () {
+    if (!pwNew.value || pwNew.value.length < 6) { pwMsg.textContent = 'Password must be at least 6 characters.'; pwMsg.style.display = ''; return; }
+    if (pwNew.value !== pwNew2.value) { pwMsg.textContent = 'The two passwords do not match.'; pwMsg.style.display = ''; return; }
+    pwBtn.disabled = true;
+    var pwRes = await sb.auth.updateUser({ password: pwNew.value });
+    pwBtn.disabled = false;
+    if (pwRes.error) { pwMsg.textContent = pwRes.error.message; pwMsg.style.display = ''; toast(pwRes.error.message); return; }
+    pwNew.value = ''; pwNew2.value = '';
+    toast('Password changed.');
+    pwMsg.textContent = 'Password changed. Use the new password next time you sign in.'; pwMsg.style.display = '';
+  });
+  pwCard.appendChild(pwNew); pwCard.appendChild(pwNew2); pwCard.appendChild(pwBtn); pwCard.appendChild(pwMsg);
+  box.appendChild(pwCard);
+
   if (isAdmin) renderAdminPanel(box);
+}
+
+/* Build one admin user row (email/username, subscription state, Grant and
+   Revoke buttons). Emails and usernames are rendered as TEXT, never as
+   HTML: a profile email is user-controlled data, and innerHTML here used
+   to be a stored-XSS hole into the owner's session. */
+function adminUserRow(u, subByUser) {
+  var row = el('div', 'user-row');
+  var sub = subByUser[u.id];
+  var active = sub && new Date(sub.expires_at) > new Date();
+  var label = u.email + (u.username ? ' (' + u.username + ')' : '') + (u.is_admin ? ' (admin)' : '');
+  row.appendChild(el('span', 'u-email', label));
+  row.appendChild(el('span', 'u-sub', active ? 'Active to ' + fmtDate(sub.expires_at) : 'No active sub'));
+  var grantBtn = el('button', 'btn btn-yellow', 'Grant premium');
+  grantBtn.addEventListener('click', async function () {
+    var res = await sb.from('subscriptions').upsert({
+      user_id: u.id,
+      expires_at: endOfCurrentMonth().toISOString(),
+      status: 'active',
+      granted_by: currentUser.id
+    }, { onConflict: 'user_id' });
+    if (res.error) { toast('Grant failed: ' + res.error.message); return; }
+    toast('Premium granted to ' + u.email + '.');
+    renderAccount();
+  });
+  var revokeBtn = el('button', 'btn btn-ghost', 'Revoke premium');
+  revokeBtn.addEventListener('click', async function () {
+    var res = await sb.from('subscriptions').update({ status: 'revoked' }).eq('user_id', u.id).eq('status', 'active');
+    if (res.error) { toast('Revoke failed: ' + res.error.message); return; }
+    toast('Premium revoked for ' + u.email + '.');
+    renderAccount();
+  });
+  row.appendChild(grantBtn);
+  row.appendChild(revokeBtn);
+  return row;
 }
 
 async function renderAdminPanel(box) {
@@ -1469,7 +1817,7 @@ async function renderAdminPanel(box) {
   card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p>Grant premium to any user from your own account. A grant lasts until the end of the current calendar month. Revoking blocks the whole app for that user immediately.</p><p class="help-text">Loading users…</p>';
   box.appendChild(card);
   try {
-    var profs = await sb.from('profiles').select('id, email, is_admin').order('email');
+    var profs = await sb.from('profiles').select('id, email, username, is_admin').order('email');
     var subs = await sb.from('subscriptions').select('user_id, expires_at, status').eq('status', 'active');
     if (profs.error) throw new Error(profs.error.message);
     var subByUser = {};
@@ -1478,48 +1826,47 @@ async function renderAdminPanel(box) {
         subByUser[s.user_id] = s;
       }
     });
-    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p>Grant premium to any user from your own account. A grant lasts until the end of the current calendar month. Revoking blocks the whole app for that user immediately.</p>';
-    if (!(profs.data || []).length) {
+    var users = profs.data || [];
+    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p>Grant premium to any user from your own account. A grant lasts until the end of the current calendar month. Revoking blocks the whole app for that user immediately.</p>' +
+      '<p class="help-text">Total registered users: ' + users.length + '</p>';
+    /* Find one user by exact email OR exact username (case-insensitive)
+       and grant/revoke for just that user — no need to scroll the list. */
+    var searchRow = el('div', 'admin-search');
+    var searchInput = el('input', 'field'); searchInput.type = 'text';
+    searchInput.placeholder = 'Find user by email or username';
+    var searchBtn = el('button', 'btn btn-yellow', 'Find user');
+    var searchMsg = el('p', 'help-text'); searchMsg.style.display = 'none';
+    var searchResult = el('div');
+    searchBtn.addEventListener('click', function () {
+      var q = searchInput.value.trim().toLowerCase();
+      searchResult.innerHTML = '';
+      if (!q) { searchMsg.textContent = 'Type an email or a username first.'; searchMsg.style.display = ''; return; }
+      var found = users.filter(function (u) {
+        return (u.email && u.email.toLowerCase() === q) ||
+          (u.username && u.username.toLowerCase() === q);
+      });
+      if (!found.length) { searchMsg.textContent = 'No user found for "' + searchInput.value.trim() + '".'; searchMsg.style.display = ''; return; }
+      searchMsg.style.display = 'none';
+      found.forEach(function (u) { searchResult.appendChild(adminUserRow(u, subByUser)); });
+    });
+    searchRow.appendChild(searchInput); searchRow.appendChild(searchBtn);
+    card.appendChild(searchRow); card.appendChild(searchMsg); card.appendChild(searchResult);
+    if (!users.length) {
       card.appendChild(el('p', 'help-text', 'No users found.'));
       return;
     }
-    (profs.data || []).forEach(function (u) {
-      var row = el('div', 'user-row');
-      var sub = subByUser[u.id];
-      var active = sub && new Date(sub.expires_at) > new Date();
-      row.innerHTML = '<span class="u-email">' + u.email + (u.is_admin ? ' (admin)' : '') + '</span>' +
-        '<span class="u-sub">' + (active ? 'Active to ' + fmtDate(sub.expires_at) : 'No active sub') + '</span>';
-      var grantBtn = el('button', 'btn btn-yellow', 'Grant premium');
-      grantBtn.addEventListener('click', async function () {
-        var res = await sb.from('subscriptions').upsert({
-          user_id: u.id,
-          expires_at: endOfCurrentMonth().toISOString(),
-          status: 'active',
-          granted_by: currentUser.id
-        }, { onConflict: 'user_id' });
-        if (res.error) { toast('Grant failed: ' + res.error.message); return; }
-        toast('Premium granted to ' + u.email + '.');
-        renderAccount();
-      });
-      var revokeBtn = el('button', 'btn btn-ghost', 'Revoke premium');
-      revokeBtn.addEventListener('click', async function () {
-        var res = await sb.from('subscriptions').update({ status: 'revoked' }).eq('user_id', u.id).eq('status', 'active');
-        if (res.error) { toast('Revoke failed: ' + res.error.message); return; }
-        toast('Premium revoked for ' + u.email + '.');
-        renderAccount();
-      });
-      row.appendChild(grantBtn);
-      row.appendChild(revokeBtn);
-      card.appendChild(row);
-    });
+    users.forEach(function (u) { card.appendChild(adminUserRow(u, subByUser)); });
   } catch (e) {
-    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3><p class="help-text">Could not load users: ' + e.message +
-      '. Make sure profiles.is_admin = true for your account (see README.md).</p>';
+    card.innerHTML = '<h3>Grant premium — users &amp; subscriptions</h3>';
+    card.appendChild(el('p', 'help-text', 'Could not load users: ' + e.message +
+      '. Make sure profiles.is_admin = true for your account (see README.md).'));
   }
 }
 
 async function afterAuth() {
+  authLinkError = null;
   await refreshSession();
+  discardStaleRaceCache();
   await syncRacesFromCloud();
   renderAccount();
   renderPrediction();
@@ -1533,6 +1880,10 @@ async function afterAuth() {
 
 function init() {
   if (typeof document === 'undefined') return;
+  /* An expired/used auth link leaves its error in the URL hash — parse it
+     now so the Account tab can explain it, and drop the hash. */
+  authLinkError = parseAuthHashError();
+  if (authLinkError) clearAuthHash();
   races = loadLocalRaces();
   speeds = loadLocalSpeeds();
   initSupabase();
@@ -1540,6 +1891,13 @@ function init() {
     var banner = $('demoBanner');
     if (banner) banner.classList.remove('hidden');
     subActive = true;
+  }
+  if (sbLoadFailed) {
+    var banner2 = $('demoBanner');
+    if (banner2) {
+      banner2.textContent = 'Could not reach the login server — check your connection and reload.';
+      banner2.classList.remove('hidden');
+    }
   }
 
   document.querySelectorAll('.nav-btn').forEach(function (b) {
@@ -1581,6 +1939,11 @@ function init() {
   // Supabase mode: restore session, then sync races.
   (async function () {
     await refreshSession();
+    /* The login service may have left an access token in the URL hash
+       (confirmation/recovery link) — the session is stored now, so drop
+       the hash before it can be copied or logged. */
+    clearAuthHash();
+    discardStaleRaceCache();
     await syncRacesFromCloud();
     renderAccount();
     renderPrediction();
@@ -1588,6 +1951,16 @@ function init() {
     renderStats();
     applyTabLocks();
   })();
+
+  /* Re-check the subscription every 5 minutes while signed in: a grant
+     made by the owner unlocks the app without a reload, and an expired
+     subscription locks it again. Network errors keep the current state. */
+  setInterval(async function () {
+    if (!sb || !currentUser || isAdmin || DEMO_MODE) return;
+    await checkSubscription();
+    applyTabLocks();
+    renderPrediction();
+  }, 5 * 60 * 1000);
 }
 
 if (typeof document !== 'undefined') {
@@ -1623,6 +1996,7 @@ if (typeof module !== 'undefined' && module.exports) {
     importCsv: importCsv,
     buildReason: buildReason,
     appAccessFor: appAccessFor,
+    validateUsername: validateUsername,
     lockedHtml: lockedHtml
   };
 }
