@@ -89,7 +89,15 @@ speed table live in `localStorage` and predictions work with no account.
      learned from your saved races. Saved races with `"unknown"` at a
      position carry no track information for that position.
    - **Equal probability (1/6)** when there is no data at all.
-   
+
+   **Recency weighting.** Both the historical frequencies above and the
+   win-rate history in the blend (step 4) use exponential decay over
+   saved races: the newest race has weight 1.0 and the weight halves
+   every `HISTORY_HALF_LIFE_RACES` races (default **50**, editable in
+   `js/config.js` — set it to any number of races > 0; a missing or
+   invalid value falls back to 50). Recent races therefore count more
+   than old ones, so patterns that change over time are picked up faster.
+
    **A hint is a likelihood, never a certainty.** A pattern hinting at Dirt
    might mean only a 10–20% chance of Dirt, not a guaranteed Dirt segment.
    Patterns change every round — the app never assumes a fixed daily
@@ -100,6 +108,10 @@ speed table live in `localStorage` and predictions work with no account.
    applied only if at least **5** saved races match that exact set +
    known segments.
    `P_final = (1 − w) × P_model + w × P_hist`.
+   The win counts behind `P_hist` are decay-weighted by recency (newest
+   race weight 1.0, halving every `HISTORY_HALF_LIFE_RACES` races, see
+   above); the 150-race gate and the 5-match minimum still use plain
+   counts.
 5. **Output.** Always the **top 2 of the 3** vehicles, each with a
    confidence % (its win probability) and a short reason (e.g. fastest on
    Desert, strong on likely hidden tracks).
