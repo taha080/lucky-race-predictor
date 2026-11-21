@@ -11,8 +11,8 @@
 
 // eslint-disable-next-line no-unused-vars
 var LRP_CONFIG = {
-  SUPABASE_URL: "YOUR_SUPABASE_URL",
-  SUPABASE_ANON_KEY: "YOUR_SUPABASE_ANON_KEY",
+  SUPABASE_URL: "https://alqqhzbgcodgdbbcrinm.supabase.co",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFscXFoemJnY29kZ2RiYmNyaW5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUyMzY5MjMsImV4cCI6MjExMDgxMjkyM30.u9nWRGvL2CQSSOV0rgHOD3g3G7h3_riUopBhyuE9AfQ",
 
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.
