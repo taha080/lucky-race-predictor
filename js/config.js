@@ -14,6 +14,12 @@ var LRP_CONFIG = {
   SUPABASE_URL: "https://alqqhzbgcodgdbbcrinm.supabase.co",
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFscXFoemJnY29kZ2RiYmNyaW5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUyMzY5MjMsImV4cCI6MjExMDgxMjkyM30.u9nWRGvL2CQSSOV0rgHOD3g3G7h3_riUopBhyuE9AfQ",
 
+  // Recency weighting for history: exponential decay over saved races.
+  // The newest race has weight 1.0; the weight halves every
+  // HISTORY_HALF_LIFE_RACES races (default 50). Applies to the win-rate
+  // history blend and to the Unknown-box track probabilities.
+  HISTORY_HALF_LIFE_RACES: 50,
+
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.
   // NOTE: for the admin panel's database reads/writes to work, the admin
