@@ -30,6 +30,13 @@
        w = clamp((N_total - 150) / 350, 0, 0.5)
      applied only if >= 5 saved races match that exact set + known segments.
        P_final = (1 - w) * P_model + w * P_hist
+   - ONE-TRACK RULE: the game shows exactly ONE track before the bet, so
+     at most ONE segment may be pinned (Pin 100%). Pinning a second
+     segment unpins the first; the other two stay Unknown. Hints (a
+     likelihood, not a certainty) on unknown segments are still allowed.
+     The engine enforces this too: if the input somehow carries two or
+     three pins, only the first (lowest index) is kept and the others are
+     treated as Unknown.
    ========================================================================== */
 
 'use strict';
@@ -146,6 +153,9 @@ var pred = {           // Predict tab state
   // All three segments behave the same: { mode, track, chance }.
   // mode: unknown|hint|pin. Default is Unknown for every segment — never
   // pre-select or auto-fill a track, including segment 1.
+  // ONE-TRACK RULE: at most ONE segment may be pinned at a time (see
+  // applySinglePin / oneTrackHints below) — the game shows only one
+  // track before the bet.
   seg1: { mode: 'unknown', track: null, chance: 50 },
   seg2: { mode: 'unknown', track: null, chance: 50 }, // mode: unknown|hint|pin
   seg3: { mode: 'unknown', track: null, chance: 50 },
@@ -307,12 +317,48 @@ function pinnedSegments(hints) {
   return known;
 }
 
+/* ONE-TRACK RULE (pure helper, unit-tested in Node).
+   The game shows exactly ONE track before the bet, so at most one segment
+   may be pinned. Given the three segment states and the index being
+   pinned, return new states where only that segment stays pinned: any
+   OTHER pinned segment goes back to Unknown. Hints on other segments are
+   left alone — a hint is a guess, not a known track. */
+function applySinglePin(hints, pinIndex) {
+  return (hints || []).map(function (h, i) {
+    if (i === pinIndex) return h;
+    if (h && h.mode === 'pin') return { mode: 'unknown', track: null, chance: 50 };
+    return h;
+  });
+}
+
+/* Apply the one-track rule to the live Predict tab state: segment segNum
+   (1-based) is being pinned — unpin any other pinned segment. */
+function pinSegment(segNum) {
+  var states = applySinglePin([pred.seg1, pred.seg2, pred.seg3], segNum - 1);
+  pred.seg1 = states[0]; pred.seg2 = states[1]; pred.seg3 = states[2];
+}
+
+/* Engine-side enforcement of the one-track rule: if the input somehow
+   carries two or three pins, keep only the FIRST pinned segment (lowest
+   index) and treat the others as Unknown. With at most one pin this is a
+   no-op. */
+function oneTrackHints(hints) {
+  var seenPin = false;
+  return (hints || []).map(function (h) {
+    if (h && h.mode === 'pin' && h.track) {
+      if (seenPin) return { mode: 'unknown', track: null, chance: 50 };
+      seenPin = true;
+    }
+    return h;
+  });
+}
+
 /* Core prediction. Returns { ranked: [{vehicle, prob, modelProb}], dist1, dist2, dist3, histInfo } */
 function computePrediction(input) {
   var vehicles = input.vehicles;
   var speedsMap = input.speeds;
   var raceList = input.races || [];
-  var hints = [input.seg1Hint, input.seg2Hint, input.seg3Hint];
+  var hints = oneTrackHints([input.seg1Hint, input.seg2Hint, input.seg3Hint]);
   var knownSegs = pinnedSegments(hints);
   var segLen = segmentLengths();
 
@@ -674,9 +720,16 @@ function renderPredictSeg(segNum) {
       var isSel = (c === 100 && state.mode === 'pin') || (c !== 100 && state.mode === 'hint' && state.chance === c);
       var chip = el('button', 'chance-chip' + (isSel ? ' selected' : ''), c === 100 ? 'Pin 100%' : c + '%');
       chip.addEventListener('click', function () {
-        if (c === 100) { state.mode = 'pin'; }
-        else { state.mode = 'hint'; state.chance = c; }
-        renderPredictSeg(segNum);
+        if (c === 100) {
+          state.mode = 'pin';
+          // ONE-TRACK RULE: pinning this segment unpins any other pinned
+          // segment — re-render all three boxes so the change shows.
+          pinSegment(segNum);
+          renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
+        } else {
+          state.mode = 'hint'; state.chance = c;
+          renderPredictSeg(segNum);
+        }
         renderPrediction();
       });
       chanceRow.appendChild(chip);
@@ -1559,6 +1612,9 @@ if (typeof module !== 'undefined' && module.exports) {
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
     pinnedSegments: pinnedSegments,
+    applySinglePin: applySinglePin,
+    pinSegment: pinSegment,
+    oneTrackHints: oneTrackHints,
     decayWeight: decayWeight,
     historyHalfLife: historyHalfLife,
     segmentLengths: segmentLengths,
