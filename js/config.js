@@ -21,12 +21,12 @@ var LRP_CONFIG = {
   HISTORY_HALF_LIFE_RACES: 50,
 
   // Segment length weights: how much of a race each segment covers.
-  // Derived from full-track races 21-27 (see README): the first segment
-  // is short (~16%), the middle segment is the longest (~56%), the last
-  // ~29%. Edit to refine as more full-track races are saved; the three
+  // Derived from full-track races 21-29 (see README): the first segment
+  // is short (~19%), the middle segment is the longest (~51%), the last
+  // ~30%. Edit to refine as more full-track races are saved; the three
   // values are normalised to sum to 1. A missing/invalid value falls
   // back to equal thirds [1/3, 1/3, 1/3].
-  SEGMENT_LENGTHS: [0.157, 0.557, 0.286],
+  SEGMENT_LENGTHS: [0.189, 0.511, 0.300],
 
   // Admin emails (in addition to profiles.is_admin = true in the database).
   // Admins can grant / revoke subscriptions from the Account tab.
