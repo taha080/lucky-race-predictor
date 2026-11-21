@@ -118,6 +118,14 @@ main { padding: 6px 14px 0; }
 .chance-chip.selected { background: var(--purple-2); border-color: var(--purple-2); }
 .chance-label { width: 100%; font-size: 12px; color: var(--muted); margin-top: 2px; }
 
+/* ---------- Predict wizard ---------- */
+/* One wizard screen at a time (START → pick → pin → RUN result). The 35s
+   timer row sits above the steps, so it stays visible on every step. */
+.btn-big { min-height: 64px; font-size: 20px; }
+.feedback-box { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 16px; }
+.feedback-btns { display: flex; gap: 10px; }
+.feedback-btns .btn { flex: 1; }
+
 /* ---------- Odds ---------- */
 .odds-box { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 16px; }
 .odds-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
