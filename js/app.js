@@ -844,6 +844,33 @@ function resetPrediction() {
   renderPrediction();
 }
 
+/* Long-press stepper: one tap = one step; hold = repeat fast (first
+   repeat after 350 ms, then every 90 ms), so odds can be adjusted
+   quickly before the 35 s timer ends. Pointer events cover touch
+   and mouse. The step updates the value in place (no full re-render),
+   so the held button is never destroyed mid-press. A click after a
+   pointerdown is skipped (already stepped); a click with no
+   pointerdown (keyboard) still steps once. */
+function bindStepper(btn, stepFn) {
+  var timer = null, handled = false;
+  function clear() { if (timer) { clearTimeout(timer); timer = null; } }
+  function repeat() { if (!btn.isConnected) { clear(); return; } stepFn(); timer = setTimeout(repeat, 90); }
+  btn.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    handled = true;
+    stepFn();
+    clear();
+    timer = setTimeout(repeat, 350);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
+    btn.addEventListener(ev, clear);
+  });
+  btn.addEventListener('click', function () {
+    if (handled) { handled = false; return; }
+    stepFn();
+  });
+}
+
 function renderOddsBox() {
   var box = $('oddsBox');
   var rows = $('oddsRows');
@@ -856,13 +883,15 @@ function renderOddsBox() {
     var minus = el('button', 'stepper', '−');
     var val = el('span', 'odds-val', (pred.odds[name] || 0).toFixed(1));
     var plus = el('button', 'stepper', '+');
-    minus.addEventListener('click', function () {
+    bindStepper(minus, function () {
       pred.odds[name] = Math.max(1.0, Math.round(((pred.odds[name] || 2) - 0.1) * 10) / 10);
-      renderOddsBox();
+      val.textContent = pred.odds[name].toFixed(1);
+      renderPrediction();
     });
-    plus.addEventListener('click', function () {
+    bindStepper(plus, function () {
       pred.odds[name] = Math.min(20, Math.round(((pred.odds[name] || 2) + 0.1) * 10) / 10);
-      renderOddsBox();
+      val.textContent = pred.odds[name].toFixed(1);
+      renderPrediction();
     });
     row.appendChild(minus); row.appendChild(val); row.appendChild(plus);
     rows.appendChild(row);
@@ -978,8 +1007,11 @@ function renderPrediction() {
   top.forEach(function (r, idx) {
     var others = pred.vehicles.filter(function (v) { return v !== r.vehicle; });
     var reason = buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
-    var pct = Math.round(r.prob * 100);
+    var pct = Math.min(99, Math.round(r.prob * 100));
     var oddsTxt = pred.odds[r.vehicle] ? ' · Odds ' + pred.odds[r.vehicle].toFixed(1) : '';
+    // Expected return (probability x odds) updates live with the odds,
+    // so adjusting the return changes the result shown below.
+    var evTxt = pred.odds[r.vehicle] ? ' · Expected return ' + (r.prob * pred.odds[r.vehicle]).toFixed(2) + 'x' : '';
     // #1 is the MAIN PICK (big, highlighted); #2 is the smaller BACKUP PICK.
     var isMain = idx === 0;
     var label = isMain ? 'MAIN PICK' : 'BACKUP PICK';
@@ -988,10 +1020,10 @@ function renderPrediction() {
       '<div class="result-head"><span class="result-name">' + r.vehicle + '</span>' +
       '<span class="result-conf">' + pct + '%</span></div>' +
       '<div class="conf-bar"><div class="conf-fill" style="width:' + pct + '%"></div></div>' +
-      '<div class="result-reason">' + reason + oddsTxt + '</div></div>';
+      '<div class="result-reason">' + reason + oddsTxt + evTxt + '</div></div>';
   });
   var third = result.ranked[2];
-  html += '<div class="result-foot">3rd: ' + third.vehicle + ' — ' + Math.round(third.prob * 100) + '%' +
+  html += '<div class="result-foot">3rd: ' + third.vehicle + ' — ' + Math.min(99, Math.round(third.prob * 100)) + '%' +
     (result.histInfo ? ' · blended with history (' + result.histInfo.matches + ' matching races, weight ' +
       Math.round(result.histInfo.weight * 100) + '%)' : '') +
     ' · computed in ' + ms + ' ms</div>';
@@ -1138,13 +1170,13 @@ function renderLogOdds() {
     var minus = el('button', 'stepper', '−');
     var val = el('span', 'odds-val', (logForm.odds[name] || 0).toFixed(1));
     var plus = el('button', 'stepper', '+');
-    minus.addEventListener('click', function () {
+    bindStepper(minus, function () {
       logForm.odds[name] = Math.max(1.0, Math.round(((logForm.odds[name] || 2) - 0.1) * 10) / 10);
-      renderLogOdds();
+      val.textContent = logForm.odds[name].toFixed(1);
     });
-    plus.addEventListener('click', function () {
+    bindStepper(plus, function () {
       logForm.odds[name] = Math.min(20, Math.round(((logForm.odds[name] || 2) + 0.1) * 10) / 10);
-      renderLogOdds();
+      val.textContent = logForm.odds[name].toFixed(1);
     });
     row.appendChild(minus); row.appendChild(val); row.appendChild(plus);
     box.appendChild(row);
