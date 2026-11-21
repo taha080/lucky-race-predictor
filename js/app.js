@@ -3,7 +3,9 @@
    Prediction runs entirely in the browser (<100ms for 36 combos).
    ----------------------------------------------------------------------------
    PREDICTION MODEL (see README.md for the full description):
-   - 3 segments, equal length. Time(v) = sum over segments of 1/speed[v][track].
+   - 3 segments with length weights SEGMENT_LENGTHS (default [0.157, 0.557,
+     0.286], editable in js/config.js; equal thirds if unset).
+     Time(v) = L1/speed[v][t1] + L2/speed[v][t2] + L3/speed[v][t3].
    - Any segment can be Unknown: the shown segment may be in ANY position
      (first, second or third) — or no segment may be shown at all. Unknown
      segments are never guessed: enumerate all track combos (up to 6x6x6),
@@ -74,6 +76,17 @@ var UNKNOWN_TRACK = 'unknown';
 
 function normalizeTracksForSave(tracks) {
   return (tracks || []).map(function (t) { return t || UNKNOWN_TRACK; });
+}
+
+// Vehicle name aliases for CSV import (case-insensitive): "motor" means
+// Motorcycle and "normal" means Car. Full names are used everywhere in
+// the app; the Log tab uses tap-to-select cards with the full names, so
+// aliases only matter for imported CSV rows. No vehicle is dropped or
+// renamed by this.
+var VEHICLE_ALIASES = { motor: 'Motorcycle', normal: 'Car' };
+function resolveVehicleName(name) {
+  var key = (name || '').trim().toLowerCase();
+  return VEHICLE_ALIASES[key] || (name || '').trim();
 }
 
 /* Duplicate rule: a race is a duplicate of a saved race when it has the
@@ -196,6 +209,21 @@ function decayWeight(ageInRaces, halfLife) {
   return Math.pow(0.5, ageInRaces / halfLife);
 }
 
+/* Segment length weights: how much of a race each segment covers
+   (fractions summing to 1). Editable in js/config.js as SEGMENT_LENGTHS
+   (default [0.157, 0.557, 0.286], derived from full-track races 21-27 —
+   see README: seg1 1.10/7, seg2 3.90/7, seg3 2.00/7). Must be 3 finite
+   positive numbers, else equal thirds. Values are normalised to sum to 1. */
+function segmentLengths() {
+  var s = CONFIG && CONFIG.SEGMENT_LENGTHS;
+  if (Array.isArray(s) && s.length === 3 &&
+      s.every(function (x) { return typeof x === 'number' && isFinite(x) && x > 0; })) {
+    var sum = s[0] + s[1] + s[2];
+    return [s[0] / sum, s[1] / sum, s[2] / sum];
+  }
+  return [1 / 3, 1 / 3, 1 / 3];
+}
+
 /* Historical frequency of a track type for a segment position (index 0, 1
    or 2), conditioned on the segments that ARE known (pinned).
    knownSegs = { segmentIndex: track } for pinned segments only.
@@ -276,6 +304,7 @@ function computePrediction(input) {
   var raceList = input.races || [];
   var hints = [input.seg1Hint, input.seg2Hint, input.seg3Hint];
   var knownSegs = pinnedSegments(hints);
+  var segLen = segmentLengths();
 
   var dists = hints.map(function (h, i) { return segmentDistribution(i, knownSegs, h, raceList); });
 
@@ -291,7 +320,7 @@ function computePrediction(input) {
         var w = combo.reduce(function (acc, t, i) { return acc * (dists[i][t] || 0); }, 1);
         if (w <= 0) return;
         var times = vehicles.map(function (v) {
-          return 1 / speedsMap[v][combo[0]] + 1 / speedsMap[v][combo[1]] + 1 / speedsMap[v][combo[2]];
+          return segLen[0] / speedsMap[v][combo[0]] + segLen[1] / speedsMap[v][combo[1]] + segLen[2] / speedsMap[v][combo[2]];
         });
         var min = Math.min.apply(null, times);
         var winners = [];
@@ -1164,9 +1193,9 @@ async function importCsv(file) {
   var added = 0, skipped = 0;
   for (var li = 1; li < lines.length; li++) {
     var c = parseCsvLine(lines[li]);
-    var vehicles = (c[idx.vehicles] || '').split('|').map(function (s) { return s.trim(); }).filter(Boolean);
+    var vehicles = (c[idx.vehicles] || '').split('|').map(function (s) { return resolveVehicleName(s); }).filter(Boolean);
     var tracks = [c[idx.track1], c[idx.track2], c[idx.track3]].map(function (s) { return (s || '').trim(); });
-    var winner = (c[idx.winner] || '').trim();
+    var winner = resolveVehicleName(c[idx.winner] || '');
     var ok = vehicles.length === 3 &&
       vehicles.every(function (v) { return vehicleByName(v); }) &&
       isValidRaceTracks(tracks) &&
@@ -1446,6 +1475,9 @@ if (typeof module !== 'undefined' && module.exports) {
     pinnedSegments: pinnedSegments,
     decayWeight: decayWeight,
     historyHalfLife: historyHalfLife,
+    segmentLengths: segmentLengths,
+    resolveVehicleName: resolveVehicleName,
+    importCsv: importCsv,
     buildReason: buildReason
   };
 }
