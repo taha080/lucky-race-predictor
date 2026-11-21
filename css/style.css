@@ -1,0 +1,200 @@
+/* Lucky Race Predictor — dark blue / purple theme matching the game.
+   Mobile-first, one-handed Android use, big tap targets (min 48px). */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --navy: #0a1e5e;
+  --navy-2: #122a7a;
+  --navy-3: #1b3a9e;
+  --purple: #6c2bd9;
+  --purple-2: #8b3dff;
+  --yellow: #ffd21f;
+  --yellow-dark: #e0b400;
+  --card: #ffffff;
+  --ink: #101a3a;
+  --muted: #8fa0c9;
+  --line: rgba(255, 255, 255, 0.14);
+  --good: #2ecc71;
+  --bad: #ff5a5a;
+}
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  background: linear-gradient(165deg, #1a0b4b 0%, #0a1e5e 55%, #122a7a 100%);
+  background-attachment: fixed;
+  color: #fff;
+  min-height: 100vh;
+}
+#app { max-width: 560px; margin: 0 auto; padding-bottom: 92px; }
+.hidden { display: none !important; }
+
+/* ---------- Header ---------- */
+.app-header { text-align: center; padding: 18px 16px 6px; }
+.logo { font-size: 34px; font-weight: 900; letter-spacing: 2px; color: #fff;
+  text-shadow: 0 2px 0 rgba(0,0,0,.35); font-style: italic; }
+.logo span { color: var(--yellow); }
+.logo-sub { letter-spacing: 6px; font-size: 13px; font-weight: 700; color: var(--muted); margin-top: -2px; }
+.demo-banner { margin-top: 12px; background: rgba(255, 210, 31, .14); border: 1px solid var(--yellow);
+  color: var(--yellow); border-radius: 10px; padding: 8px 10px; font-size: 13px; line-height: 1.4; }
+
+/* ---------- Layout ---------- */
+main { padding: 6px 14px 0; }
+.tab { display: none; }
+.tab.active { display: block; }
+.section-title { font-size: 17px; font-weight: 800; margin: 18px 0 10px; }
+.sub-title { font-size: 15px; font-weight: 700; margin: 16px 0 8px; }
+.hint-note { font-size: 12px; font-weight: 400; color: var(--muted); }
+.help-text { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 4px 0 8px; }
+.pick-count { color: var(--yellow); font-size: 14px; }
+
+/* ---------- Buttons ---------- */
+.btn { min-height: 48px; border: none; border-radius: 12px; font-size: 16px; font-weight: 800;
+  padding: 10px 18px; cursor: pointer; color: var(--ink); background: #dfe6ff; }
+.btn:active { transform: scale(.97); }
+.btn-yellow { background: var(--yellow); color: #1a1400; }
+.btn-ghost { background: rgba(255,255,255,.10); color: #fff; border: 1px solid var(--line); }
+.btn-small { min-height: 40px; font-size: 14px; padding: 6px 14px; }
+.btn-block { display: block; width: 100%; margin-top: 16px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.file-label { display: inline-flex; align-items: center; justify-content: center; }
+.hidden-file { display: none; }
+
+/* ---------- Timer ---------- */
+.timer-row { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.08);
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+.timer-label { font-size: 14px; font-weight: 700; }
+.timer-display { font-size: 24px; font-weight: 900; color: var(--yellow); min-width: 56px; text-align: center; }
+.timer-display.low { color: var(--bad); }
+.timer-row .btn { margin-left: auto; }
+
+/* ---------- Vehicle grid ---------- */
+.vehicle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.vehicle-card { background: var(--card); color: var(--ink); border-radius: 14px; padding: 10px 6px 8px;
+  text-align: center; cursor: pointer; border: 3px solid transparent; min-height: 108px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.vehicle-card .v-name { font-size: 14px; font-weight: 800; line-height: 1.15; }
+.vehicle-card .v-meta { font-size: 11px; color: #5a6b9a; font-weight: 600; }
+.vehicle-card.picked { border-color: var(--yellow); background: #fff7cc; box-shadow: 0 0 0 2px var(--yellow); }
+.vehicle-card.dim { opacity: .45; }
+.vehicle-card .v-rank { font-size: 11px; font-weight: 900; color: var(--purple); }
+
+/* CSS vehicle glyph (no external images — game art is copyrighted) */
+.glyph { position: relative; width: 66px; height: 36px; }
+.glyph .body { position: absolute; left: 4px; right: 4px; bottom: 9px; height: 14px;
+  background: var(--c, #888); border-radius: 7px; }
+.glyph .cab { position: absolute; left: 20px; top: 3px; width: 26px; height: 12px;
+  background: var(--c, #888); border-radius: 7px 9px 2px 2px; opacity: .8; }
+.glyph .w1, .glyph .w2 { position: absolute; bottom: 0; width: 14px; height: 14px;
+  background: #141414; border: 2px solid #666; border-radius: 50%; }
+.glyph .w1 { left: 9px; } .glyph .w2 { right: 9px; }
+.glyph.big .w1, .glyph.big .w2 { width: 19px; height: 19px; bottom: -2px; }
+.glyph.big .body { bottom: 12px; }
+.glyph.bike .body, .glyph.bike .cab { display: none; }
+.glyph.bike .bar { position: absolute; left: 14px; top: 8px; width: 38px; height: 5px;
+  background: var(--c, #888); border-radius: 3px; transform: rotate(-14deg); }
+.glyph.bike .w1 { left: 6px; } .glyph.bike .w2 { right: 6px; }
+
+/* ---------- Track buttons ---------- */
+.track-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.track-btn { min-height: 48px; flex: 1 1 30%; border-radius: 12px; border: 2px solid var(--line);
+  background: rgba(255,255,255,.08); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; padding: 8px 6px; }
+.track-btn.selected { background: var(--yellow); color: #1a1400; border-color: var(--yellow); }
+.track-btn.unknown-btn { background: rgba(255,255,255,.04); color: var(--muted); }
+.chance-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chance-chip { min-height: 44px; padding: 8px 12px; border-radius: 999px; border: 2px solid var(--line);
+  background: rgba(255,255,255,.08); color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
+.chance-chip.selected { background: var(--purple-2); border-color: var(--purple-2); }
+.chance-label { width: 100%; font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ---------- Odds ---------- */
+.odds-box { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 16px; }
+.odds-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.odds-row + .odds-row { border-top: 1px solid var(--line); }
+.odds-name { flex: 1; font-weight: 700; font-size: 15px; }
+.odds-val { min-width: 52px; text-align: center; font-weight: 900; font-size: 18px; color: var(--yellow); }
+.stepper { width: 48px; height: 48px; border-radius: 12px; border: none; background: rgba(255,255,255,.14);
+  color: #fff; font-size: 24px; font-weight: 900; cursor: pointer; }
+
+/* ---------- Result ---------- */
+.result-panel { margin-top: 18px; background: var(--card); color: var(--ink); border-radius: 16px; padding: 14px; }
+.result-empty { color: #5a6b9a; font-size: 14px; text-align: center; padding: 8px 0; }
+.result-title { font-size: 15px; font-weight: 900; margin-bottom: 10px; color: var(--ink); }
+.result-card { border-radius: 12px; padding: 12px; margin-bottom: 10px; background: #f2f4ff; border: 2px solid transparent; }
+.result-card.rank-1 { border-color: var(--yellow); background: #fff7cc; }
+.result-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.result-name { font-size: 18px; font-weight: 900; }
+.result-conf { font-size: 22px; font-weight: 900; color: var(--purple); white-space: nowrap; }
+.conf-bar { height: 10px; border-radius: 6px; background: #d7ddf5; margin: 8px 0; overflow: hidden; }
+.conf-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--purple), var(--purple-2)); }
+.result-reason { font-size: 13px; color: #3c4a72; line-height: 1.45; }
+.result-foot { font-size: 12px; color: #5a6b9a; margin-top: 4px; }
+.assumed-line { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 8px 2px 0; }
+.locked-panel { text-align: center; padding: 18px 10px; }
+.locked-panel h3 { font-size: 18px; margin-bottom: 8px; }
+.locked-panel p { color: #5a6b9a; font-size: 14px; line-height: 1.5; margin-bottom: 12px; }
+
+/* ---------- Log race ---------- */
+.text-input { width: 100%; min-height: 48px; border-radius: 12px; border: 2px solid var(--line);
+  background: rgba(255,255,255,.10); color: #fff; font-size: 15px; padding: 10px 12px; margin-top: 8px; }
+.text-input::placeholder { color: var(--muted); }
+.winner-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.race-list { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.race-item { background: rgba(255,255,255,.07); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.race-item .r-line { font-size: 14px; line-height: 1.5; }
+.race-item .r-line b { color: var(--yellow); }
+.race-item .r-meta { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.race-actions { display: flex; gap: 8px; margin-top: 8px; }
+.race-actions .btn { min-height: 40px; font-size: 13px; padding: 6px 14px; }
+
+/* ---------- Stats ---------- */
+.stats-actions { display: flex; gap: 10px; margin: 8px 0 4px; }
+.stats-summary { display: flex; gap: 10px; margin: 10px 0; }
+.stat-chip { flex: 1; background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 8px; text-align: center; }
+.stat-chip .num { font-size: 24px; font-weight: 900; color: var(--yellow); }
+.stat-chip .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.stat-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.stat-row .s-name { flex: 1; font-weight: 700; }
+.stat-row .s-val { font-weight: 800; color: var(--yellow); min-width: 64px; text-align: right; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.data { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.data th, table.data td { border: 1px solid var(--line); padding: 7px 6px; text-align: center; white-space: nowrap; }
+table.data th { background: rgba(255,255,255,.10); font-weight: 800; }
+table.data td:first-child, table.data th:first-child { text-align: left; font-weight: 700; }
+table.data input { width: 56px; min-height: 40px; text-align: center; font-size: 15px; font-weight: 700;
+  border-radius: 8px; border: 1px solid var(--line); background: rgba(255,255,255,.10); color: #fff; }
+.freq-row { margin-bottom: 12px; }
+.freq-row h4 { font-size: 14px; margin-bottom: 6px; }
+.freq-bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,.08); }
+.freq-bar span { display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #1a1400; overflow: hidden; }
+
+/* ---------- Speed table ---------- */
+.speed-actions { display: flex; gap: 10px; margin-top: 14px; }
+.speed-actions .btn { flex: 1; }
+
+/* ---------- Account ---------- */
+.acct-card { background: rgba(255,255,255,.07); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+.acct-card h3 { font-size: 16px; margin-bottom: 8px; }
+.acct-card p { font-size: 14px; color: #d5ddf5; line-height: 1.5; margin-bottom: 8px; }
+.acct-card .field { width: 100%; min-height: 48px; border-radius: 12px; border: 2px solid var(--line);
+  background: rgba(255,255,255,.10); color: #fff; font-size: 15px; padding: 10px 12px; margin-bottom: 10px; }
+.acct-card .field::placeholder { color: var(--muted); }
+.sub-active { color: var(--good); font-weight: 900; }
+.sub-expired { color: var(--bad); font-weight: 900; }
+.user-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.user-row .u-email { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-row .u-sub { font-size: 12px; color: var(--muted); }
+.user-row .btn { min-height: 40px; font-size: 13px; padding: 6px 12px; }
+
+/* ---------- Bottom nav ---------- */
+.bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  display: flex; max-width: 560px; margin: 0 auto; background: rgba(10, 20, 70, .96);
+  border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.nav-btn { flex: 1; min-height: 60px; border: none; background: none; color: var(--muted);
+  font-size: 13px; font-weight: 800; cursor: pointer; }
+.nav-btn.active { color: var(--yellow); }
+
+/* ---------- Toast ---------- */
+.toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 100;
+  background: #101a3a; color: #fff; border: 1px solid var(--yellow); border-radius: 999px;
+  padding: 10px 18px; font-size: 14px; font-weight: 700; box-shadow: 0 4px 18px rgba(0,0,0,.5); white-space: nowrap; }
