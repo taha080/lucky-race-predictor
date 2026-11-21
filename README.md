@@ -20,14 +20,18 @@ speed table live in `localStorage` and predictions work with no account.
 
 ## Features
 
-- **Predict tab (main)** — tap 3 vehicles, tap the visible first track,
-  optionally hint the hidden segments 2 & 3 (with a rough chance: 10–90% or
-  Pin 100%), optionally set odds with −/+ steppers. The **top 2 picks** with
-  a confidence % and a short reason appear **instantly on every tap** — no
-  submit button. A 35-second betting timer is included as a visual aid.
+- **Predict tab (main)** — tap 3 vehicles, then set the track for any
+  segment you can see (the shown segment can be first, second or third).
+  Every segment defaults to **Unknown** and is never guessed — tap a track
+  to hint it (with a rough chance: 10–90% or Pin 100%). A one-tap Reset
+  sets all three segments back to Unknown. Optionally set odds with −/+
+  steppers. The **top 2 picks** with a confidence % and a short reason
+  appear **instantly on every tap** — no submit button. A 35-second
+  betting timer is included as a visual aid.
 - **Log Race tab** — fast logging of past races: 3 vehicles, 3 segment
-  tracks, on-screen patterns, winner, how it won, odds. Edit / delete any
-  race. Every saved race teaches the model.
+  tracks (any segment may be left **Unknown** — stored as the real value
+  `"unknown"`), on-screen patterns, winner, how it won, odds. Edit /
+  delete any race. Every saved race teaches the model.
 - **Stats tab** — win rate per vehicle, win rate per vehicle per track,
   track frequency per segment, CSV export + import.
 - **Speed Table tab** — the full 9×6 speed table, every value editable,
@@ -71,16 +75,19 @@ speed table live in `localStorage` and predictions work with no account.
    on a track assignment `(t1, t2, t3)` is
    `1/speed[v][t1] + 1/speed[v][t2] + 1/speed[v][t3]`.
    The lowest time wins that assignment (exact ties split the weight).
-2. **Hidden segments.** Segment 1's track is known; segments 2 & 3 are
-   hidden, so all 6×6 = 36 combinations are enumerated, each weighted by
-   `P(t2) × P(t3)`.
-3. **Hidden-track probabilities.** For each hidden segment, in order:
+2. **Unknown segments.** Any segment can be Unknown — the shown segment
+   may be in any position (first, second or third), or no segment may be
+   shown at all. All track combinations (up to 6×6×6 = 216) are
+   enumerated, each weighted by `P(t1) × P(t2) × P(t3)`.
+3. **Segment probabilities.** For each segment that is not pinned, in order:
    - **Pinned** track → probability 1.0.
    - **Hinted** track with chance `p` (tap 10/20/30/50/70/90%) → the hinted
      track gets `p`; the remaining `1 − p` is shared over the other 5 tracks
      by historical frequency.
    - Otherwise the **historical frequency** of that track for that segment
-     position, given the first segment — learned from your saved races.
+     position, conditioned on the segments that are pinned (known) —
+     learned from your saved races. Saved races with `"unknown"` at a
+     position carry no track information for that position.
    - **Equal probability (1/6)** when there is no data at all.
    
    **A hint is a likelihood, never a certainty.** A pattern hinting at Dirt
@@ -88,9 +95,10 @@ speed table live in `localStorage` and predictions work with no account.
    Patterns change every round — the app never assumes a fixed daily
    pattern, and it relearns from every newly saved race.
 4. **History blend.** When **150+** races are saved, the speed model is
-   blended with the actual win rate for the same 3-vehicle set + first
-   track: `w = clamp((N_total − 150) / 350, 0, 0.5)`, applied only if at
-   least **5** saved races match that exact set + first track.
+   blended with the actual win rate for the same 3-vehicle set + the same
+   known (pinned) segments: `w = clamp((N_total − 150) / 350, 0, 0.5)`,
+   applied only if at least **5** saved races match that exact set +
+   known segments.
    `P_final = (1 − w) × P_model + w × P_hist`.
 5. **Output.** Always the **top 2 of the 3** vehicles, each with a
    confidence % (its win probability) and a short reason (e.g. fastest on
@@ -181,7 +189,7 @@ node test-predict.js   # sample round (see below)
 const m = require('./js/app.js');
 const r = m.computePrediction({
   vehicles: ['ORV', 'SUV', 'Monster Truck'],
-  seg1: 'Desert',
+  seg1Hint: { mode: 'pin', track: 'Desert' },
   seg2Hint: { mode: 'unknown' },
   seg3Hint: { mode: 'unknown' },
   speeds: m.DEFAULT_SPEEDS,
