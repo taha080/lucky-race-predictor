@@ -1018,6 +1018,9 @@ function startTimer() {
     timerInterval = null;
     timerLeft = 35;
     renderTimer();
+    // Resetting the timer means the next bet: clear the picked vehicles
+    // and segments too, so the user never has to unselect cards by hand.
+    resetPrediction();
     return;
   }
   timerLeft = 35;
