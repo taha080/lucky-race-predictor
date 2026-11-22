@@ -1132,6 +1132,38 @@ function showWizardStep(n) {
    delay is added. The result is snapshotted (wizard.lastRun): later
    renderPrediction() calls re-render the same run instead of silently
    changing the numbers when new data arrives. */
+/* Repeat-history note under a prediction result (display-only — it never
+   changes the prediction). Finds past saved races with the SAME segment
+   number + SAME track in that segment + the SAME 3 vehicles
+   (order-insensitive). The other two segments are ignored: the match is
+   about the one pinned segment the user actually saw. Returns '' when
+   nothing matches (no note is shown) or when no segment is pinned.
+   Otherwise e.g. "Seen before: 2 times — ATV won 1, Sports Car won 1".
+   Pure — unit-tested in Node. */
+function repeatHistoryNote(segNum, track, vehicles, raceList) {
+  if (!segNum || !track || track === UNKNOWN_TRACK) return '';
+  if (!Array.isArray(vehicles) || vehicles.length !== 3) return '';
+  var wanted = vehicles.slice().sort();
+  var wins = {};
+  var times = 0;
+  (raceList || []).forEach(function (r) {
+    if (!r || !Array.isArray(r.vehicles) || r.vehicles.length !== 3) return;
+    if (!Array.isArray(r.tracks) || r.tracks.length !== 3) return;
+    if (r.tracks[segNum - 1] !== track) return;
+    var set = r.vehicles.slice().sort();
+    if (set[0] !== wanted[0] || set[1] !== wanted[1] || set[2] !== wanted[2]) return;
+    times += 1;
+    wins[r.winner] = (wins[r.winner] || 0) + 1;
+  });
+  if (!times) return '';
+  var parts = Object.keys(wins).sort(function (a, b) {
+    return wins[b] - wins[a] || (a < b ? -1 : a > b ? 1 : 0);
+  }).map(function (w) {
+    return w + ' won ' + wins[w];
+  });
+  return 'Seen before: ' + times + (times === 1 ? ' time' : ' times') + ' — ' + parts.join(', ');
+}
+
 function runPrediction() {
   var gate = predictionAllowed();
   if (!gate.ok) {
@@ -1150,6 +1182,13 @@ function runPrediction() {
     races: races
   });
   var t1 = (typeof performance !== 'undefined') ? performance.now() : 0;
+  /* Repeat-history note: the one pinned segment (if any) + its track +
+     the 3 picked vehicles, matched against saved races. Computed once
+     at RUN time and frozen with the result — later saves never change it. */
+  var pinnedSeg = 0, pinnedTrack = null;
+  [pred.seg1, pred.seg2, pred.seg3].forEach(function (s, i) {
+    if (s.mode === 'pin' && s.track) { pinnedSeg = i + 1; pinnedTrack = s.track; }
+  });
   wizard.lastRun = {
     vehicles: pred.vehicles.slice(),
     tracks: [pred.seg1, pred.seg2, pred.seg3].map(function (s) {
@@ -1157,6 +1196,7 @@ function runPrediction() {
     }),
     main: result.ranked[0].vehicle,
     result: result,
+    repeatNote: repeatHistoryNote(pinnedSeg, pinnedTrack, pred.vehicles, races),
     ms: Math.max(0, Math.round(t1 - t0))
   };
   wizard.ran = true;
@@ -1486,6 +1526,10 @@ function renderPrediction() {
     (result.histInfo ? ' · blended with history (' + result.histInfo.matches + ' matching races, weight ' +
       Math.round(result.histInfo.weight * 100) + '%)' : '') +
     ' · computed in ' + ms + ' ms</div>';
+  /* Repeat-history note, frozen at RUN time ('' = never seen before). */
+  if (wizard.lastRun.repeatNote) {
+    html += '<div class="repeat-note">' + wizard.lastRun.repeatNote + '</div>';
+  }
   panel.innerHTML = html;
 
   line.textContent = 'Assumed tracks — Seg 1: ' + formatDist(result.dist1) +
@@ -2044,7 +2088,7 @@ function renderAccount() {
   }
 
   if (!currentUser) {
-    /* Athera-style auth: centred white card, Sign in / Sign up tabs,
+    /* Athera-style auth: centred card, Sign in / Sign up tabs,
        labelled fields, show/hide password, inline errors. Same auth
        rules as before (email + password min 6; username optional). */
     var wrap = el('div', 'auth-wrap');
@@ -2645,6 +2689,7 @@ if (typeof module !== 'undefined' && module.exports) {
     historyHalfLife: historyHalfLife,
     historyBlendWeight: historyBlendWeight,
     buildFeedbackRace: buildFeedbackRace,
+    repeatHistoryNote: repeatHistoryNote,
     oddsBlendWeight: oddsBlendWeight,
     segmentLengths: segmentLengths,
     resolveVehicleName: resolveVehicleName,
