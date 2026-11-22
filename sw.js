@@ -3,7 +3,7 @@
 // Pages (navigation) are network-first so new deploys show immediately;
 // same-origin static assets are cache-first. Supabase / CDN traffic is
 // never cached here.
-const CACHE = 'lrp-v14'; // bump on every deploy that changes cached assets, so phones drop the old app.js
+const CACHE = 'lrp-v15'; // bump on every deploy that changes cached assets, so phones drop the old app.js
 const ASSETS = [
   '.',
   'index.html',
@@ -43,6 +43,26 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           const copy = response.clone();
           caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  /* js/app.js is network-first too (cache fallback): a stale app.js
+     against fresh index.html leaves the feedback buttons bound to
+     nothing — visible buttons that do nothing. That mixed-version
+     failure is what the user hit on v14; app.js must never outlive
+     a fresh page again. */
+  if (url.pathname.endsWith('/js/app.js')) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+          }
           return response;
         })
         .catch(() => caches.match(event.request))
