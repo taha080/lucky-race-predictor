@@ -37,12 +37,15 @@
      The engine enforces this too: if the input somehow carries two or
      three pins, only the first (lowest index) is kept and the others are
      treated as Unknown.
-   - LIVE AUTO-PREDICT (lrp-v16): the Android Live Reader upserts one row
+   - LIVE AUTO-PREDICT (lrp-v17): the Android Live Reader upserts one row
      per user into public.live_bets (see sql/migration-live-bets.sql) when
      a new bet appears; the app subscribes over Supabase Realtime and
      auto-drives the wizard from the row (vehicles + the one shown track
-     + the synced countdown). Pure validators/deciders are unit-tested in
-     scripts/test-lrp-v16.js.
+     + the synced countdown). The countdown is age-adjusted (timer_seconds
+     minus the time since updated_at); a bet arriving with under 10 s left
+     is still predicted but marked LATE. A live bet never clobbers a manual
+     run already in progress (wizard steps 1–2). Pure validators/deciders
+     are unit-tested in scripts/test-lrp-v16.js and scripts/test-lrp-v17.js.
    ========================================================================== */
 
 'use strict';
@@ -781,6 +784,7 @@ function initSupabase() {
       });
     } else if (event === 'SIGNED_OUT') {
       unsubscribeLiveBets();
+      liveLastBet = null; // the last bet belonged to the signed-out user
       currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
       recoveryMode = false;
       races = []; saveLocalRaces();
@@ -1029,7 +1033,7 @@ function glyphHtml(v) {
    UI — Predict tab
    ========================================================================== */
 
-/* ---------------- Live auto-predict (lrp-v16) ---------------------------- */
+/* ---------------- Live auto-predict (lrp-v17) ---------------------------- */
 /* The Android Live Reader watches the game screen and upserts ONE row per
    user into public.live_bets (see sql/migration-live-bets.sql) each time
    a new bet appears. This app subscribes to that table over Supabase
@@ -1039,6 +1043,20 @@ function glyphHtml(v) {
        live_bets is own-row only, so nobody else's bets can arrive here.
      - A row is only acted on when it is fresh (updated_at within 60 s),
        has exactly 3 known vehicles, and has at least one known track.
+     - DEDUP: a row with the same vehicles + shown track as the last
+       auto-run bet is a refresh of the same screen — UNLESS it is the
+       NEXT race with the identical line-up. isNewLiveBet tells them
+       apart: updated_at at least LIVE_NEW_BET_GAP_MS (40 s) newer
+       than the last processed row (one screen lives at most 35 s),
+       or the timer jumped back up near 35 after counting down
+       (timer reset = new screen). Without this, two consecutive
+       identical bets would lose the second prediction.
+     - The shown countdown is age-adjusted: timer_seconds minus the time
+       since updated_at (liveRemainingSeconds). A bet arriving with under
+       10 s left is still predicted but marked LATE on the result.
+     - A live bet never clobbers a manual run in progress (wizard steps
+       1–2: picking vehicles / pinning the track) — it is ignored with a
+       small notice instead.
      - The wizard is driven with the existing functions only
        (resetPrediction -> applyLiveBet -> runPrediction); the prediction
        model, odds blend, confidence guard and duplicate protection are
@@ -1049,22 +1067,92 @@ function glyphHtml(v) {
        START / pick / pin / RUN keeps working exactly as before. */
 var LS_LIVE = 'lrp_live_v1';
 var LIVE_STALE_MS = 60000; // a bet older than this is finished — never auto-run it
+var LIVE_LATE_SECONDS = 10; // under this many seconds left when a bet arrives: still predict, but mark it LATE
 var liveEnabled = (function () {
   var raw = lsGet(LS_LIVE);
   return raw === null ? true : raw === '1';
 })();
 var liveChannel = null;  // active Realtime channel (null when off / signed out)
 var liveActive = false;  // a live subscription is currently open
-var liveLastBetKey = ''; // betKey of the last bet we auto-ran (dedup re-fires)
+var liveLastBet = null; // { key, updatedAtMs, timerSeconds } of the last
+                       // bet we auto-ran (dedup re-fires). The key alone
+                       // cannot tell two CONSECUTIVE IDENTICAL bets apart,
+                       // so the dedup also remembers WHEN the bet was
+                       // processed and what the timer read (isNewLiveBet).
 
 /* Bet identity: the 3 vehicles (order-insensitive) + the 3 tracks in
-   order, with missing entries read as 'unknown'. Two rows are the same
-   bet when this matches, even if updated_at moved (the Reader re-sends
-   the same bet screen while the timer ticks). Pure — unit-tested. */
+   order, with missing entries read as 'unknown'. Two rows have the
+   same key when this matches, even if updated_at moved (the Reader
+   re-sends the same bet screen while the timer ticks). The key alone
+   is NOT enough to call two rows the same bet: the NEXT race can
+   have the identical line-up (same 3 vehicles + same shown track —
+   roughly 1 in 500 bets), so decideLiveBet also checks the
+   updated_at gap and the timer reset (isNewLiveBet). Pure —
+   unit-tested. */
 function liveBetKey(row) {
   if (!row || !Array.isArray(row.vehicles) || !Array.isArray(row.tracks)) return '';
   return row.vehicles.slice().sort().join('|') + '||' +
     normalizeTracksForSave(row.tracks).join('|');
+}
+
+/* updated_at (else created_at) of a live_bets row as epoch ms, or null
+   when the row carries no parseable timestamp. Pure — unit-tested. */
+function liveRowUpdatedAtMs(row) {
+  if (!row) return null;
+  var ts = Date.parse(row.updated_at || row.created_at || '');
+  return isNaN(ts) ? null : ts;
+}
+
+/* Gap that proves a row is a NEW bet screen, not a refresh of the one
+   already processed: 40 s. One bet screen lives at most 35 s (the
+   betting timer) — two updates of the SAME screen can never be more
+   than 35 s apart in updated_at — so 40 s is the 35 s screen lifetime
+   plus 5 s of delivery slack. A new bet only appears after the race
+   itself has run, so its first update is normally a full minute or
+   more after the previous bet's last update. Pure — unit-tested. */
+var LIVE_NEW_BET_GAP_MS = 40000;
+/* Timer-reset detection: a fresh bet screen reads near 35 s again.
+   LIVE_TIMER_RESET_MIN is the lowest timer a fresh screen is still
+   read at (the Reader reads the screen as soon as it appears, so it
+   is normally 33–35); LIVE_TIMER_RESET_JUMP is the smallest jump up
+   that counts — on one screen the timer only ever counts DOWN, so a
+   jump of 5 s or more cannot be the same screen (a 1–2 s wobble from
+   a re-read is not a reset). Both must hold. Pure — unit-tested. */
+var LIVE_TIMER_RESET_MIN = 30;
+var LIVE_TIMER_RESET_JUMP = 5;
+
+/* Is this row a NEW bet, or a re-fire / refresh of `lastBet`?
+   `lastBet` is the record of the last bet we auto-ran:
+   { key, updatedAtMs, timerSeconds } — or a bare betKey string
+   (legacy callers, e.g. the v16 tests), or '' / null when no bet has
+   been auto-run yet. Returns true when:
+     (a) the vehicles/tracks differ from the last bet, or there is no
+         last bet at all (a genuinely new line-up is always new);
+     (b) the same line-up, but updated_at is at least
+         LIVE_NEW_BET_GAP_MS newer than the last processed row — two
+         updates of one bet screen can never be that far apart;
+     (c) the same line-up, but the timer jumped back up near 35 after
+         having counted down — a fresh bet screen appeared.
+   A same-bet refresh — small updated_at gap, monotonically decreasing
+   timer, same vehicles/tracks — fails all three and returns false.
+   With a bare string lastBet there is no timing to compare, so only
+   (a) applies and a matching key is the same bet (legacy behaviour).
+   Pure — unit-tested. */
+function isNewLiveBet(row, lastBet) {
+  if (!lastBet) return true;
+  var key = liveBetKey(row);
+  if (typeof lastBet === 'string') return !lastBet || key !== lastBet;
+  if (!lastBet.key || key !== lastBet.key) return true;
+  var ts = liveRowUpdatedAtMs(row);
+  if (ts !== null && typeof lastBet.updatedAtMs === 'number' && !isNaN(lastBet.updatedAtMs)) {
+    if (ts - lastBet.updatedAtMs >= LIVE_NEW_BET_GAP_MS) return true;
+  }
+  var cur = row ? row.timer_seconds : null;
+  var prev = lastBet.timerSeconds;
+  if (typeof cur === 'number' && isFinite(cur) &&
+      typeof prev === 'number' && isFinite(prev) &&
+      cur >= LIVE_TIMER_RESET_MIN && cur - prev >= LIVE_TIMER_RESET_JUMP) return true;
+  return false;
 }
 
 /* Synced countdown seconds from a live-bet row, or null when the row
@@ -1092,6 +1180,23 @@ function liveCountdownAt(timerSeconds, receivedAtMs, nowMs) {
   return left > 0 ? left : 0;
 }
 
+/* Seconds actually left on a live bet's countdown at `nowMs`: the
+   timer_seconds the Reader read, minus the time since the row was
+   written (updated_at). Without this the displayed countdown would be
+   too generous by however long the row took to arrive — a bet read at
+   33 s but delivered 8 s later really has 25 s left, not 33. Returns
+   null when the row carries no usable timer or is stale (> 60 s old).
+   When updated_at is missing/unparseable the raw timer_seconds is
+   used as-is (best effort). Pure — unit-tested. */
+function liveRemainingSeconds(row, nowMs) {
+  var s = liveTimerSeconds(row, nowMs);
+  if (s === null) return null;
+  var now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  var ts = Date.parse(row.updated_at || row.created_at || '');
+  if (isNaN(ts)) return s;
+  return liveCountdownAt(s, ts, now);
+}
+
 /* Segment states for a live bet's 3 tracks: the FIRST known track is
    pinned (the game shows only one track before the bet — one-track
    rule), the other two stay Unknown, even if the row somehow names
@@ -1110,7 +1215,10 @@ function liveBetSegments(tracks) {
 }
 
 /* Validate a live_bets row. Returns { ok: true, vehicles[3], tracks[3],
-   knownSegIndex, knownTrack, timerSeconds } or { ok: false, reason }.
+   knownSegIndex, knownTrack, timerSeconds, remainingSeconds } or
+   { ok: false, reason }. timerSeconds is the raw value the Reader read;
+   remainingSeconds is age-adjusted (see liveRemainingSeconds) — the
+   countdown the app actually shows.
    Reasons: 'empty' | 'vehicles' (not exactly 3 known, distinct
    vehicles) | 'tracks' (not 3 entries of a known track / 'unknown') |
    'no-known-track' (all three segments unknown — nothing was shown) |
@@ -1146,7 +1254,8 @@ function validateLiveBet(row, nowMs) {
     tracks: norm,
     knownSegIndex: knownIdx,
     knownTrack: norm[knownIdx],
-    timerSeconds: liveTimerSeconds(row, now)
+    timerSeconds: liveTimerSeconds(row, now),
+    remainingSeconds: liveRemainingSeconds(row, now)
   };
 }
 
@@ -1168,22 +1277,74 @@ function currentBetKey() {
   return '';
 }
 
+/* True while the user is mid-wizard on a manual run: step 1 (picking
+   the 3 vehicles) or step 2 (pinning the track). Step 0 is the START
+   screen (nothing to lose) and step 3 is a finished run — a live bet
+   for the NEXT race is meant to replace that result, so it is not
+   "in progress". Reads the wizard global — unit-tested via app.wizard. */
+function isManualRunInProgress() {
+  return wizard.step === 1 || wizard.step === 2;
+}
+
 /* Decide what to do with one live-bet row. `accessOk` is appAccess().ok;
-   `lastKey` is liveLastBetKey (the bet already auto-run). Returns
-     { action: 'run', vehicles, tracks, timerSeconds, key } — auto-drive it
+   `lastBet` is liveLastBet — the record of the last bet already
+   auto-run ({ key, updatedAtMs, timerSeconds }), or a bare betKey
+   string / '' for legacy callers; `manualBusy` is
+   isManualRunInProgress(). Returns
+     { action: 'run', vehicles, tracks, timerSeconds, remainingSeconds,
+       late, key } — auto-drive it; `late` is true when under
+       LIVE_LATE_SECONDS were left when the bet arrived (still predict,
+       but mark it LATE)
      { action: 'ignore', reason } — stale / invalid / duplicate /
-       already shown; nothing to do
+       already shown / manual-busy; nothing to do
      { action: 'premium', reason: 'premium' } — signed in but no premium:
        do NOT auto-run; the caller toasts instead.
-   Pure — unit-tested. */
-function decideLiveBet(row, accessOk, nowMs, lastKey) {
+   DEDUP: a row whose vehicles + shown track match the last auto-run
+   bet is a duplicate — UNLESS isNewLiveBet says it is the NEXT race
+   with the identical line-up (updated_at gap >= LIVE_NEW_BET_GAP_MS,
+   or the timer reset near 35). The same override applies when the
+   matching run on screen IS that last auto-run bet; a MANUAL run of
+   the same line-up stays ignored ('already-shown'), because the user
+   already predicted this exact race by hand.
+   Pure apart from the manualBusy flag the caller passes in —
+   unit-tested. */
+function decideLiveBet(row, accessOk, nowMs, lastBet, manualBusy) {
   if (accessOk === false) return { action: 'premium', reason: 'premium' };
   var v = validateLiveBet(row, nowMs);
   if (!v.ok) return { action: 'ignore', reason: v.reason };
+  if (manualBusy) return { action: 'ignore', reason: 'manual-busy' };
   var key = liveBetKey({ vehicles: v.vehicles, tracks: v.tracks });
-  if (lastKey && key === lastKey) return { action: 'ignore', reason: 'duplicate' };
-  if (key && key === currentBetKey()) return { action: 'ignore', reason: 'already-shown' };
-  return { action: 'run', reason: '', vehicles: v.vehicles, tracks: v.tracks, timerSeconds: v.timerSeconds, key: key };
+  var lastIsSame = (typeof lastBet === 'string')
+    ? (!!lastBet && lastBet === key)
+    : (!!lastBet && lastBet.key === key);
+  if (lastIsSame) {
+    /* Same line-up as the last auto-run bet: a refresh of the same bet
+       screen, or the NEXT race with the identical line-up.
+       isNewLiveBet tells them apart (updated_at gap / timer reset)
+       when the caller passed the full last-bet record; with a bare
+       string key there is nothing to compare, so it stays a duplicate
+       (legacy behaviour — see scripts/test-lrp-v16.js). */
+    if (typeof lastBet === 'object' && lastBet && isNewLiveBet(row, lastBet)) {
+      /* New race, identical line-up — fall through to run below. */
+    } else {
+      return { action: 'ignore', reason: 'duplicate' };
+    }
+  } else if (key && key === currentBetKey()) {
+    /* The run on screen already has this line-up. That is the last
+       auto-run bet in the consecutive-identical-bets case — handled
+       by the branch above — so reaching here means the displayed run
+       is a MANUAL run of this exact race: the user already predicted
+       it by hand, ignore the row. */
+    return { action: 'ignore', reason: 'already-shown' };
+  }
+  var remaining = (typeof v.remainingSeconds === 'number') ? v.remainingSeconds : v.timerSeconds;
+  return {
+    action: 'run', reason: '',
+    vehicles: v.vehicles, tracks: v.tracks,
+    timerSeconds: v.timerSeconds, remainingSeconds: remaining,
+    late: (typeof remaining === 'number' && remaining < LIVE_LATE_SECONDS),
+    key: key
+  };
 }
 
 /* Apply a validated live bet to the Predict state: the 3 vehicles and
@@ -1248,24 +1409,59 @@ function startLiveCountdown(seconds) {
   }, 1000);
 }
 
+/* LATE marker on the result (step 3): shown when a live bet arrived
+   with under LIVE_LATE_SECONDS left — the prediction is still shown,
+   but the user must know the timer was nearly gone. Empty text hides
+   it. No-op without a DOM (Node tests). */
+function setLiveLateNote(text) {
+  if (typeof document === 'undefined') return;
+  var note = $('liveLateNote');
+  if (!note) return;
+  note.textContent = text || '';
+  note.classList.toggle('hidden', !text);
+}
+
 /* One live-bet row arrived (Realtime event or the fetch on subscribe):
    decide, then auto-drive the wizard. The live result stays on screen
-   until the next bet replaces it; feedback saves exactly as today. */
+   until the next bet replaces it; feedback saves exactly as today.
+   The countdown starts from the AGE-ADJUSTED remaining seconds
+   (decision.remainingSeconds), not the raw timer_seconds — a bet read
+   at 33 s but delivered 8 s later really has 25 s left. */
 function handleLiveBet(row) {
   if (!liveEnabled) return;
-  var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBetKey);
+  var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBet, isManualRunInProgress());
   if (decision.action === 'premium') { toast('Premium required for live predictions.'); return; }
+  if (decision.action === 'ignore' && decision.reason === 'manual-busy') {
+    toast('Live bet ignored — finish your manual run first.');
+    var status = $('liveStatus');
+    if (status) status.textContent = 'Live bet arrived while you were picking — ignored, your run is untouched.';
+    return;
+  }
   if (decision.action !== 'run') return;
-  liveLastBetKey = decision.key;
+  /* Remember WHEN this bet was processed and what the timer read:
+     decideLiveBet needs both to tell the NEXT race with the identical
+     line-up apart from a refresh of this same bet screen
+     (isNewLiveBet — updated_at gap / timer reset). */
+  liveLastBet = {
+    key: decision.key,
+    updatedAtMs: liveRowUpdatedAtMs(row),
+    timerSeconds: decision.timerSeconds
+  };
   resetPrediction();
   var applied = applyLiveBet(row);
   if (!applied.ok) return; // validated a moment ago — never expected
   renderPredictVehicles();
   renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
-  if (typeof decision.timerSeconds === 'number') startLiveCountdown(decision.timerSeconds);
+  var countdownFrom = (typeof decision.remainingSeconds === 'number') ? decision.remainingSeconds : decision.timerSeconds;
+  if (typeof countdownFrom === 'number') startLiveCountdown(countdownFrom);
   showTab('predict');
   runPrediction();
-  toast('Live bet received — prediction ready.');
+  if (decision.late) {
+    setLiveLateNote('LATE — only ' + countdownFrom + 's left when this bet arrived. Bet fast, or skip it.');
+    var st = $('liveStatus');
+    if (st) st.textContent = 'Live auto-predict ON — last bet arrived LATE (' + countdownFrom + 's left).';
+  }
+  toast(decision.late ? 'Live bet received late — prediction ready, timer nearly gone.' : 'Live bet received — prediction ready.');
 }
 
 /* The bet that may already be live when the app opens / subscribes:
@@ -1408,6 +1604,7 @@ function resetPrediction() {
   });
   wizard.step = 0; wizard.ran = false; wizard.lastRun = null;
   wizard.feedback = null; wizard.feedbackSaved = false; wizard.feedbackSaving = false;
+  setLiveLateNote('');
   renderPredictVehicles();
   renderPrediction();
   renderFeedback();
@@ -1649,6 +1846,7 @@ function migrateFeedback(feedback, lastRun) {
 }
 
 function runPrediction() {
+  setLiveLateNote(''); // a manual RUN never shows a stale LATE note; handleLiveBet sets it again after RUN when the bet really was late
   var gate = predictionAllowed();
   if (!gate.ok) {
     showWizardStep(3);
@@ -3297,9 +3495,17 @@ if (typeof module !== 'undefined' && module.exports) {
     pred: pred,
     validateLiveBet: validateLiveBet,
     liveBetKey: liveBetKey,
+    liveRowUpdatedAtMs: liveRowUpdatedAtMs,
+    isNewLiveBet: isNewLiveBet,
+    LIVE_NEW_BET_GAP_MS: LIVE_NEW_BET_GAP_MS,
+    LIVE_TIMER_RESET_MIN: LIVE_TIMER_RESET_MIN,
+    LIVE_TIMER_RESET_JUMP: LIVE_TIMER_RESET_JUMP,
     liveBetSegments: liveBetSegments,
     liveTimerSeconds: liveTimerSeconds,
+    liveRemainingSeconds: liveRemainingSeconds,
     liveCountdownAt: liveCountdownAt,
+    isManualRunInProgress: isManualRunInProgress,
+    LIVE_LATE_SECONDS: LIVE_LATE_SECONDS,
     currentBetKey: currentBetKey,
     decideLiveBet: decideLiveBet,
     applyLiveBet: applyLiveBet,
