@@ -1,10 +1,9 @@
-// lrp-v15 redeploy trigger
 // Lucky Race Predictor service worker — makes the app installable
 // (Add to Home screen / Install app) and caches the app shell offline.
 // Pages (navigation) are network-first so new deploys show immediately;
 // same-origin static assets are cache-first. Supabase / CDN traffic is
 // never cached here.
-const CACHE = 'lrp-v15'; // bump on every deploy that changes cached assets, so phones drop the old app.js
+const CACHE = 'lrp-v16'; // bump on every deploy that changes cached assets, so phones drop the old app.js
 const ASSETS = [
   '.',
   'index.html',
