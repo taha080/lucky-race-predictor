@@ -37,6 +37,12 @@
      The engine enforces this too: if the input somehow carries two or
      three pins, only the first (lowest index) is kept and the others are
      treated as Unknown.
+   - LIVE AUTO-PREDICT (lrp-v16): the Android Live Reader upserts one row
+     per user into public.live_bets (see sql/migration-live-bets.sql) when
+     a new bet appears; the app subscribes over Supabase Realtime and
+     auto-drives the wizard from the row (vehicles + the one shown track
+     + the synced countdown). Pure validators/deciders are unit-tested in
+     scripts/test-lrp-v16.js.
    ========================================================================== */
 
 'use strict';
@@ -771,8 +777,10 @@ function initSupabase() {
         showTab('account');
         renderAccount();
         applyTabLocks();
+        maybeSubscribeLiveBets();
       });
     } else if (event === 'SIGNED_OUT') {
+      unsubscribeLiveBets();
       currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
       recoveryMode = false;
       races = []; saveLocalRaces();
@@ -1016,6 +1024,306 @@ function glyphHtml(v) {
 /* ============================================================================
    UI — Predict tab
    ========================================================================== */
+
+/* ============================================================================
+   UI — Predict tab
+   ========================================================================== */
+
+/* ---------------- Live auto-predict (lrp-v16) ---------------------------- */
+/* The Android Live Reader watches the game screen and upserts ONE row per
+   user into public.live_bets (see sql/migration-live-bets.sql) each time
+   a new bet appears. This app subscribes to that table over Supabase
+   Realtime and auto-drives the Predict wizard from the row — no taps
+   needed inside the 35-second betting timer.
+     - The subscription is per-user (filter user_id=eq.<own id>); RLS on
+       live_bets is own-row only, so nobody else's bets can arrive here.
+     - A row is only acted on when it is fresh (updated_at within 60 s),
+       has exactly 3 known vehicles, and has at least one known track.
+     - The wizard is driven with the existing functions only
+       (resetPrediction -> applyLiveBet -> runPrediction); the prediction
+       model, odds blend, confidence guard and duplicate protection are
+       untouched, and the 3-button feedback saves exactly as today.
+     - The result stays on screen until the next bet replaces it.
+     - The toggle defaults ON and is persisted in localStorage; when OFF
+       the channel is removed and nothing auto-drives. Manual
+       START / pick / pin / RUN keeps working exactly as before. */
+var LS_LIVE = 'lrp_live_v1';
+var LIVE_STALE_MS = 60000; // a bet older than this is finished — never auto-run it
+var liveEnabled = (function () {
+  var raw = lsGet(LS_LIVE);
+  return raw === null ? true : raw === '1';
+})();
+var liveChannel = null;  // active Realtime channel (null when off / signed out)
+var liveActive = false;  // a live subscription is currently open
+var liveLastBetKey = ''; // betKey of the last bet we auto-ran (dedup re-fires)
+
+/* Bet identity: the 3 vehicles (order-insensitive) + the 3 tracks in
+   order, with missing entries read as 'unknown'. Two rows are the same
+   bet when this matches, even if updated_at moved (the Reader re-sends
+   the same bet screen while the timer ticks). Pure — unit-tested. */
+function liveBetKey(row) {
+  if (!row || !Array.isArray(row.vehicles) || !Array.isArray(row.tracks)) return '';
+  return row.vehicles.slice().sort().join('|') + '||' +
+    normalizeTracksForSave(row.tracks).join('|');
+}
+
+/* Synced countdown seconds from a live-bet row, or null when the row
+   carries no usable timer (null / non-numeric timer_seconds) or is
+   stale (> 60 s old). The caller falls back to the local countdown
+   when this returns null. Pure — unit-tested. */
+function liveTimerSeconds(row, nowMs) {
+  if (!row) return null;
+  var s = row.timer_seconds;
+  if (typeof s !== 'number' || !isFinite(s)) return null;
+  var now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  var ts = Date.parse(row.updated_at || row.created_at || '');
+  if (!isNaN(ts) && now - ts > LIVE_STALE_MS) return null;
+  return clamp(Math.round(s), 0, 35);
+}
+
+/* Countdown remaining at `nowMs` for a timer read at `receivedAtMs`
+   (pure clock arithmetic — the live equivalent of the local timer
+   ticking down once a second). Returns null for an unusable timer,
+   0 once it has run out. Pure — unit-tested. */
+function liveCountdownAt(timerSeconds, receivedAtMs, nowMs) {
+  if (typeof timerSeconds !== 'number' || !isFinite(timerSeconds)) return null;
+  if (typeof receivedAtMs !== 'number' || typeof nowMs !== 'number') return null;
+  var left = Math.round(timerSeconds) - Math.floor((nowMs - receivedAtMs) / 1000);
+  return left > 0 ? left : 0;
+}
+
+/* Segment states for a live bet's 3 tracks: the FIRST known track is
+   pinned (the game shows only one track before the bet — one-track
+   rule), the other two stay Unknown, even if the row somehow names
+   more than one track. Pure — unit-tested. */
+function liveBetSegments(tracks) {
+  var norm = normalizeTracksForSave(tracks);
+  var pinned = false;
+  return [0, 1, 2].map(function (i) {
+    var t = norm[i];
+    if (!pinned && t && t !== UNKNOWN_TRACK && TRACKS.indexOf(t) !== -1) {
+      pinned = true;
+      return { mode: 'pin', track: t, chance: 100 };
+    }
+    return { mode: 'unknown', track: null, chance: 50 };
+  });
+}
+
+/* Validate a live_bets row. Returns { ok: true, vehicles[3], tracks[3],
+   knownSegIndex, knownTrack, timerSeconds } or { ok: false, reason }.
+   Reasons: 'empty' | 'vehicles' (not exactly 3 known, distinct
+   vehicles) | 'tracks' (not 3 entries of a known track / 'unknown') |
+   'no-known-track' (all three segments unknown — nothing was shown) |
+   'stale' (updated_at older than 60 s). Pure — unit-tested. */
+function validateLiveBet(row, nowMs) {
+  if (!row || typeof row !== 'object') return { ok: false, reason: 'empty' };
+  if (!Array.isArray(row.vehicles) || row.vehicles.length !== 3) return { ok: false, reason: 'vehicles' };
+  var names = [];
+  for (var i = 0; i < 3; i++) {
+    var v = resolveVehicleName(row.vehicles[i]);
+    if (!vehicleByName(v)) return { ok: false, reason: 'vehicles' };
+    names.push(v);
+  }
+  if (names[0] === names[1] || names[0] === names[2] || names[1] === names[2]) {
+    return { ok: false, reason: 'vehicles' };
+  }
+  if (!Array.isArray(row.tracks) || row.tracks.length !== 3) return { ok: false, reason: 'tracks' };
+  var norm = normalizeTracksForSave(row.tracks.map(function (t) { return resolveTrackName(t); }));
+  for (var j = 0; j < 3; j++) {
+    if (TRACKS.indexOf(norm[j]) === -1 && norm[j] !== UNKNOWN_TRACK) return { ok: false, reason: 'tracks' };
+  }
+  var knownIdx = -1;
+  for (var k = 0; k < 3; k++) {
+    if (norm[k] !== UNKNOWN_TRACK) { knownIdx = k; break; }
+  }
+  if (knownIdx === -1) return { ok: false, reason: 'no-known-track' };
+  var now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  var ts = Date.parse(row.updated_at || row.created_at || '');
+  if (!isNaN(ts) && now - ts > LIVE_STALE_MS) return { ok: false, reason: 'stale' };
+  return {
+    ok: true,
+    vehicles: names,
+    tracks: norm,
+    knownSegIndex: knownIdx,
+    knownTrack: norm[knownIdx],
+    timerSeconds: liveTimerSeconds(row, now)
+  };
+}
+
+/* Identity of the bet currently displayed: the frozen lastRun when a
+   run is on screen, else the manual picks + pin ('' when nothing is
+   picked yet). Used to ignore a live row that matches what is already
+   shown. Pure (reads pred / wizard globals) — unit-tested. */
+function currentBetKey() {
+  if (wizard.ran && wizard.lastRun && Array.isArray(wizard.lastRun.vehicles)) {
+    return wizard.lastRun.vehicles.slice().sort().join('|') + '||' +
+      normalizeTracksForSave(wizard.lastRun.tracks).join('|');
+  }
+  if (pred.vehicles.length === 3) {
+    var tracks = [pred.seg1, pred.seg2, pred.seg3].map(function (s) {
+      return (s.mode === 'pin' && s.track) ? s.track : UNKNOWN_TRACK;
+    });
+    return pred.vehicles.slice().sort().join('|') + '||' + tracks.join('|');
+  }
+  return '';
+}
+
+/* Decide what to do with one live-bet row. `accessOk` is appAccess().ok;
+   `lastKey` is liveLastBetKey (the bet already auto-run). Returns
+     { action: 'run', vehicles, tracks, timerSeconds, key } — auto-drive it
+     { action: 'ignore', reason } — stale / invalid / duplicate /
+       already shown; nothing to do
+     { action: 'premium', reason: 'premium' } — signed in but no premium:
+       do NOT auto-run; the caller toasts instead.
+   Pure — unit-tested. */
+function decideLiveBet(row, accessOk, nowMs, lastKey) {
+  if (accessOk === false) return { action: 'premium', reason: 'premium' };
+  var v = validateLiveBet(row, nowMs);
+  if (!v.ok) return { action: 'ignore', reason: v.reason };
+  var key = liveBetKey({ vehicles: v.vehicles, tracks: v.tracks });
+  if (lastKey && key === lastKey) return { action: 'ignore', reason: 'duplicate' };
+  if (key && key === currentBetKey()) return { action: 'ignore', reason: 'already-shown' };
+  return { action: 'run', reason: '', vehicles: v.vehicles, tracks: v.tracks, timerSeconds: v.timerSeconds, key: key };
+}
+
+/* Apply a validated live bet to the Predict state: the 3 vehicles and
+   exactly one pinned segment (the first known track), the other two
+   Unknown. No DOM, no prediction — the caller renders and runs.
+   Returns { ok: true, ... } or { ok: false, reason }. Unit-tested. */
+function applyLiveBet(row, nowMs) {
+  var v = validateLiveBet(row, nowMs);
+  if (!v.ok) return { ok: false, reason: v.reason };
+  pred.vehicles = v.vehicles.slice();
+  var segs = liveBetSegments(v.tracks);
+  pred.seg1 = segs[0]; pred.seg2 = segs[1]; pred.seg3 = segs[2];
+  pred.odds = {};
+  /* The Reader also sends odds, but the wizard has no odds step and
+     runPrediction passes no odds — so Reader odds are deliberately NOT
+     copied into pred.odds. The prediction is identical to a manual
+     RUN with the same vehicles + pin. */
+  return { ok: true, vehicles: v.vehicles, tracks: v.tracks, timerSeconds: v.timerSeconds, key: liveBetKey({ vehicles: v.vehicles, tracks: v.tracks }) };
+}
+
+/* LIVE badge + status line under the timer. Shown while a live
+   subscription is open; the toggle always reflects the saved choice. */
+function setLiveBadge() {
+  if (typeof document === 'undefined') return;
+  var badge = $('liveBadge');
+  if (badge) badge.classList.toggle('hidden', !liveActive);
+  var status = $('liveStatus');
+  if (status) {
+    status.textContent = liveActive
+      ? 'Live auto-predict ON — watching for the next bet.'
+      : (liveEnabled ? 'Live auto-predict ON — waiting for the Reader…' : 'Live auto-predict off.');
+  }
+  var toggle = $('liveToggle');
+  if (toggle) toggle.checked = liveEnabled;
+}
+
+/* Synced countdown from the Reader's timer_seconds. Reuses the same
+   timer row / interval as the manual 35 s timer: the synced value
+   replaces the local countdown and ticks down once a second. When
+   timer_seconds is null/stale the caller does not call this at all, so
+   the local countdown keeps running as before. */
+var liveTimerReceivedAt = 0;
+function startLiveCountdown(seconds) {
+  if (typeof document === 'undefined') return;
+  if (typeof seconds !== 'number' || !isFinite(seconds)) return;
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  timerLeft = clamp(Math.round(seconds), 0, 35);
+  liveTimerReceivedAt = Date.now();
+  renderTimer();
+  if (timerLeft <= 0) return;
+  timerInterval = setInterval(function () {
+    timerLeft -= 1;
+    if (timerLeft <= 0) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+      timerLeft = 0;
+      renderTimer();
+      toast('Betting closed — race started.');
+      return;
+    }
+    renderTimer();
+  }, 1000);
+}
+
+/* One live-bet row arrived (Realtime event or the fetch on subscribe):
+   decide, then auto-drive the wizard. The live result stays on screen
+   until the next bet replaces it; feedback saves exactly as today. */
+function handleLiveBet(row) {
+  if (!liveEnabled) return;
+  var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBetKey);
+  if (decision.action === 'premium') { toast('Premium required for live predictions.'); return; }
+  if (decision.action !== 'run') return;
+  liveLastBetKey = decision.key;
+  resetPrediction();
+  var applied = applyLiveBet(row);
+  if (!applied.ok) return; // validated a moment ago — never expected
+  renderPredictVehicles();
+  renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
+  if (typeof decision.timerSeconds === 'number') startLiveCountdown(decision.timerSeconds);
+  showTab('predict');
+  runPrediction();
+  toast('Live bet received — prediction ready.');
+}
+
+/* The bet that may already be live when the app opens / subscribes:
+   fetch the user's single live_bets row once and handle it like any
+   other row (the 60 s staleness check drops it when the bet is over). */
+async function fetchLatestLiveBet() {
+  if (!sb || !currentUser) return;
+  try {
+    var res = await sb.from('live_bets').select('*').eq('user_id', currentUser.id).maybeSingle();
+    if (res && res.data) handleLiveBet(res.data);
+  } catch (e) { /* no live bet yet — normal, nothing to do */ }
+}
+
+/* Subscribe to the user's own live_bets row over Realtime. No-op when
+   live mode is off, signed out, or already subscribed. */
+function subscribeLiveBets() {
+  if (typeof document === 'undefined') return false;
+  if (!liveEnabled || !sb || !currentUser) return false;
+  if (liveChannel) return true;
+  var userId = currentUser.id;
+  liveChannel = sb.channel('live-bets')
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'live_bets', filter: 'user_id=eq.' + userId },
+      function (payload) {
+        if (payload && payload.new) handleLiveBet(payload.new);
+      });
+  liveChannel.subscribe(function (status) {
+    liveActive = (status === 'SUBSCRIBED');
+    setLiveBadge();
+    if (liveActive) fetchLatestLiveBet();
+  });
+  liveActive = true; // optimistic until the subscribe callback confirms
+  setLiveBadge();
+  return true;
+}
+
+function unsubscribeLiveBets() {
+  if (liveChannel && sb) {
+    try { sb.removeChannel(liveChannel); } catch (e) { /* already gone */ }
+  }
+  liveChannel = null;
+  liveActive = false;
+  setLiveBadge();
+}
+
+/* Toggle handler: persist the choice; subscribing starts live mode,
+   unsubscribing stops it (and never auto-drives again while off). */
+function setLiveEnabled(enabled) {
+  liveEnabled = !!enabled;
+  lsSet(LS_LIVE, liveEnabled ? '1' : '0');
+  setLiveBadge();
+  if (liveEnabled) subscribeLiveBets();
+  else unsubscribeLiveBets();
+}
+
+function maybeSubscribeLiveBets() {
+  if (liveEnabled && sb && currentUser) subscribeLiveBets();
+}
 
 function renderPredictVehicles() {
   var grid = $('predictVehicles');
@@ -2659,6 +2967,7 @@ function renderAccount() {
   if (currentUsername) status.appendChild(el('p', null, 'Username: ' + currentUsername));
   var outBtn = el('button', 'btn btn-ghost', 'Sign out');
   outBtn.addEventListener('click', async function () {
+    unsubscribeLiveBets();
     await sb.auth.signOut();
     currentUser = null; currentUsername = null; subActive = false; isAdmin = false;
     recoveryMode = false;
@@ -2826,6 +3135,7 @@ async function afterAuth() {
   renderPrediction();
   renderRaceList();
   applyTabLocks();
+  maybeSubscribeLiveBets();
 }
 
 /* ============================================================================
@@ -2872,9 +3182,15 @@ function init() {
   renderStats();
   renderSpeedTable();
   renderTimer();
+  setLiveBadge();
   showWizardStep(wizard.step);
 
   $('timerBtn').addEventListener('click', startTimer);
+  var liveToggle = $('liveToggle');
+  if (liveToggle) {
+    liveToggle.checked = liveEnabled;
+    liveToggle.addEventListener('change', function (e) { setLiveEnabled(e.target.checked); });
+  }
   $('startBtn').addEventListener('click', function () { showWizardStep(1); });
   $('toPinBtn').addEventListener('click', function () { showWizardStep(2); });
   $('backToStartBtn').addEventListener('click', function () { showWizardStep(0); });
@@ -2929,6 +3245,7 @@ function init() {
     renderRaceList();
     renderStats();
     applyTabLocks();
+    maybeSubscribeLiveBets();
   })();
 
   /* Re-check the subscription every 5 minutes while signed in: a grant
@@ -2977,6 +3294,16 @@ if (typeof module !== 'undefined' && module.exports) {
     suggestionLine: suggestionLine,
     answerFeedback: answerFeedback,
     wizard: wizard,
+    pred: pred,
+    validateLiveBet: validateLiveBet,
+    liveBetKey: liveBetKey,
+    liveBetSegments: liveBetSegments,
+    liveTimerSeconds: liveTimerSeconds,
+    liveCountdownAt: liveCountdownAt,
+    currentBetKey: currentBetKey,
+    decideLiveBet: decideLiveBet,
+    applyLiveBet: applyLiveBet,
+    LIVE_STALE_MS: LIVE_STALE_MS,
     rankOfWinner: rankOfWinner,
     hintsFromTracks: hintsFromTracks,
     isScribdRace: isScribdRace,
