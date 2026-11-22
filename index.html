@@ -81,15 +81,12 @@
         <p id="assumedLine" class="assumed-line"></p>
 
         <div id="feedbackBox" class="feedback-box hidden">
-          <h3 class="sub-title">Was this prediction right?</h3>
+          <h3 class="sub-title">Which pick won?</h3>
           <p class="help-text">Answer after the race finishes — your answer is saved as a race and teaches the model.</p>
           <div id="feedbackBtns" class="feedback-btns">
-            <button id="fbCorrectBtn" class="btn btn-yellow">✓ Correct — MAIN pick won</button>
-            <button id="fbWrongBtn" class="btn btn-ghost">✗ Wrong</button>
-          </div>
-          <div id="fbWinnerRow" class="hidden">
-            <p class="help-text">Which vehicle actually won?</p>
-            <div id="fbWinnerBtns" class="winner-row"></div>
+            <button id="fbHighBtn" class="btn btn-yellow">HIGH won</button>
+            <button id="fbMidBtn" class="btn btn-yellow">MID won</button>
+            <button id="fbJackpotBtn" class="btn btn-ghost">JACKPOT won</button>
           </div>
           <p id="fbSavedMsg" class="help-text hidden"></p>
         </div>
@@ -143,6 +140,8 @@
         </label>
       </div>
       <div id="statsSummary" class="stats-summary"></div>
+      <h3 class="sub-title">Prediction accuracy</h3>
+      <div id="statsAccuracy"></div>
       <h3 class="sub-title">Win rate per vehicle</h3>
       <div id="statsVehicles"></div>
       <h3 class="sub-title">Win rate per vehicle per track</h3>
