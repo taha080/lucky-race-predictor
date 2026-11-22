@@ -7,8 +7,8 @@ by the user — every input is a tap, and the prediction appears instantly.
 
 > **Disclaimer:** This is an independent fan-made tool. It is not affiliated
 > with Chamat or any streaming app, and it does not use any of their art,
-> images, or code. Predictions are probabilities based on vehicle speeds and
-> your logged races — never a guarantee. Never bet more than you can afford
+> images, or code. Predictions are probabilities based only on your
+> logged races — never a guarantee. Never bet more than you can afford
 > to lose.
 
 ## Live demo
