@@ -1,9 +1,9 @@
-// Tests for the ODDS BLEND (Lucky Race Predictor).
-// The game's odds move the prediction % live: implied chance per vehicle
-// is (1 / odds), normalised across the 3 picked vehicles — higher odds
-// mean the game thinks the vehicle is LESS likely to win. The final %
-// is (1 - ODDS_BLEND_WEIGHT) * track+speed+history % + ODDS_BLEND_WEIGHT
-// * odds-implied % (default weight 0.1, see js/config.js).
+// Tests that the GAME ODDS are IGNORED for ranking (lrp-v19).
+// The Predictor ranks purely from the saved races — no speeds, no
+// segment lengths, no odds, nothing invented. The game's odds are
+// still shown on the vehicle cards and quoted in the JACKPOT reason,
+// but they must NEVER move the % or flip the order. (Before lrp-v19
+// the odds were blended in at 10% — that blend is gone.)
 // Run from the repo root:
 //   node scripts/test-odds-blend.js
 // Exit code 0 = all pass, 1 = any failure.
@@ -30,66 +30,63 @@ function sumProbs(result) {
 
 var speeds = app.DEFAULT_SPEEDS;
 var vehicles = ['ORV', 'Car', 'SUV'];
-function baseInput() {
+function baseInput(races, odds) {
   return {
     vehicles: vehicles,
-    seg1Hint: pin('Desert'), // ORV is fastest on Desert: physics favours ORV
+    seg1Hint: pin('Desert'),
     seg2Hint: unknown(),
     seg3Hint: unknown(),
     speeds: speeds,
-    races: []
+    races: races || [],
+    odds: odds || null
   };
 }
 
-// --- baseline: no odds -> pure physics, no oddsInfo ---
+// --- baseline: no odds, no races -> honest uniform, no oddsInfo ---
 var base = app.computePrediction(baseInput());
 check('baseline: probs sum to 1', approx(sumProbs(base), 1, 1e-6));
-check('baseline: ranked desc', base.ranked[0].prob >= base.ranked[1].prob && base.ranked[1].prob >= base.ranked[2].prob);
-check('baseline: ORV is MAIN on a Desert pin', base.ranked[0].vehicle === 'ORV');
+check('baseline: uniform 1/3 with no data', base.ranked.every(function (r) { return approx(r.prob, 1 / 3, 1e-9); }));
+check('baseline: first by input order (no invented HIGH)', base.ranked[0].vehicle === 'ORV');
 check('baseline: no oddsInfo without odds', base.oddsInfo === null);
+check('baseline: no histInfo (no blend)', base.histInfo === null);
 
-// --- odds favouring the underdog pull its % up, ORV down ---
-var withOdds = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 5.0, 'Car': 2.0, 'SUV': 3.0 }
-}));
+// --- odds favouring the underdog must NOT pull its % up ---
+var withOdds = app.computePrediction(baseInput([], { 'ORV': 5.0, 'Car': 2.0, 'SUV': 3.0 }));
 check('odds: probs sum to 1', approx(sumProbs(withOdds), 1, 1e-6));
-check('odds: Car % rises vs baseline', probOf(withOdds, 'Car') > probOf(base, 'Car'));
-check('odds: ORV % falls vs baseline', probOf(withOdds, 'ORV') < probOf(base, 'ORV'));
-check('odds: oddsInfo weight is 0.1', withOdds.oddsInfo && withOdds.oddsInfo.weight === 0.1);
-check('odds: implied Car (1/2 normalised) beats ORV (1/5)',
-  withOdds.oddsInfo.implied['Car'] > withOdds.oddsInfo.implied['ORV']);
-var carRow = withOdds.ranked.filter(function (x) { return x.vehicle === 'Car'; })[0];
-check('odds: oddsProb recorded on ranked rows', carRow && typeof carRow.oddsProb === 'number' && carRow.oddsProb > 0);
+check('odds: Car % does NOT rise with favourable odds', approx(probOf(withOdds, 'Car'), probOf(base, 'Car'), 1e-9));
+check('odds: ORV % does NOT fall with poor odds', approx(probOf(withOdds, 'ORV'), probOf(base, 'ORV'), 1e-9));
+check('odds: ranking identical to baseline', JSON.stringify(withOdds.ranked) === JSON.stringify(base.ranked));
+check('odds: oddsInfo stays null with odds passed', withOdds.oddsInfo === null);
+check('odds: no oddsProb recorded on ranked rows',
+  withOdds.ranked.every(function (r) { return typeof r.oddsProb === 'undefined'; }));
 
-// --- strong odds only nudge the % (weight 0.1): MAIN never flips on odds ---
-var nudge = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 8.0, 'Car': 1.2, 'SUV': 8.0 }
-}));
-check('odds: strong Car odds do NOT flip MAIN (ORV stays first)', nudge.ranked[0].vehicle === 'ORV');
+// --- strong odds must NOT flip MAIN or move anything ---
+var nudge = app.computePrediction(baseInput([], { 'ORV': 8.0, 'Car': 1.2, 'SUV': 8.0 }));
+check('odds: strong Car odds do NOT flip MAIN', nudge.ranked[0].vehicle === 'ORV');
 check('odds: nudged probs still sum to 1', approx(sumProbs(nudge), 1, 1e-6));
-check('odds: strong Car odds still raise Car % a little', probOf(nudge, 'Car') > probOf(base, 'Car'));
+check('odds: strong Car odds do NOT raise Car %', approx(probOf(nudge, 'Car'), probOf(base, 'Car'), 1e-9));
 
-// --- changing odds moves the % (the live-update the user asked for) ---
-var oddsA = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 2.0, 'Car': 2.0, 'SUV': 2.0 }
-}));
-var oddsB = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 2.0, 'Car': 4.0, 'SUV': 2.0 }
-}));
-check('odds: raising Car odds lowers Car %', probOf(oddsB, 'Car') < probOf(oddsA, 'Car'));
-check('odds: equal odds leave ranking = physics ranking',
-  oddsA.ranked.map(function (r) { return r.vehicle; }).join('|') ===
-  base.ranked.map(function (r) { return r.vehicle; }).join('|'));
+// --- changing odds moves nothing at all ---
+var oddsA = app.computePrediction(baseInput([], { 'ORV': 2.0, 'Car': 2.0, 'SUV': 2.0 }));
+var oddsB = app.computePrediction(baseInput([], { 'ORV': 2.0, 'Car': 4.0, 'SUV': 2.0 }));
+check('odds: raising Car odds does NOT lower Car %', approx(probOf(oddsB, 'Car'), probOf(oddsA, 'Car'), 1e-9));
+check('odds: equal odds leave ranking = baseline ranking',
+  JSON.stringify(oddsA.ranked) === JSON.stringify(base.ranked));
+
+// --- with real data, the DATA decides — odds still ignored ---
+var hist = [];
+for (var i = 0; i < 4; i++) hist.push({ vehicles: vehicles.slice(), tracks: ['Desert', 'unknown', 'unknown'], winner: 'ORV', how_won: 'Other', how_won_text: '' });
+hist.push({ vehicles: vehicles.slice(), tracks: ['Desert', 'unknown', 'unknown'], winner: 'Car', how_won: 'Other', how_won_text: '' });
+var dataNoOdds = app.computePrediction(baseInput(hist));
+var dataOdds = app.computePrediction(baseInput(hist, { 'ORV': 9.0, 'Car': 1.1, 'SUV': 9.0 }));
+check('odds: with data, ORV is HIGH from its 4/5 wins', dataNoOdds.ranked[0].vehicle === 'ORV');
+check('odds: with data, odds still change nothing', JSON.stringify(dataOdds.ranked) === JSON.stringify(dataNoOdds.ranked));
 
 // --- invalid / missing odds are ignored, never crash ---
-var badOdds = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 0, 'Car': 2.0, 'SUV': 3.0 }
-}));
+var badOdds = app.computePrediction(baseInput([], { 'ORV': 0, 'Car': 2.0, 'SUV': 3.0 }));
 check('odds: zero odds ignored (same as baseline)',
   badOdds.oddsInfo === null && approx(probOf(badOdds, 'ORV'), probOf(base, 'ORV'), 1e-9));
-var partialOdds = app.computePrediction(Object.assign(baseInput(), {
-  odds: { 'ORV': 2.0, 'Car': 2.0 }
-}));
+var partialOdds = app.computePrediction(baseInput([], { 'ORV': 2.0, 'Car': 2.0 }));
 check('odds: missing one vehicle odds ignored',
   partialOdds.oddsInfo === null && approx(probOf(partialOdds, 'Car'), probOf(base, 'Car'), 1e-9));
 

@@ -5,14 +5,15 @@
 //       and goes to manual picking. startLiveDecision is the pure
 //       decider; handleLiveBet now returns 'ran' | 'shown' | false so
 //       START knows whether a live result is on screen.
-//   (b) Inversion regression: the ranking semantics the 23 Nov live
-//       report questioned — HIGH must be the fastest / most likely
-//       vehicle, JACKPOT the slowest / least likely. The replay
-//       (scripts/replay-live-inversion.js, 346 saved races, live
-//       conditions: one segment pinned) found NO inversion — HIGH won
-//       50.3% of races, JACKPOT 18.9% — so these tests pin the correct
-//       direction: if anyone ever flips the sort or the labels, they
-//       fail. No label/sort change was made in v18.
+//   (b) Ranking semantics (lrp-v19: DATA-ONLY): HIGH must be the
+//       vehicle with the best empirical record at the finest matching
+//       level, JACKPOT the worst. No speeds, no odds — if anyone ever
+//       flips the sort or the labels, or reintroduces speeds/odds into
+//       the ranking, these fail. (v18's physics-based version of this
+//       section is superseded: the old model scored HIGH 50.3% /
+//       top-2 81.1% on the 346-race replay, but the user ordered a
+//       purely data-based ranking, so the direction is now pinned by
+//       the data itself.)
 // Run from the repo root:
 //   node scripts/test-lrp-v18.js
 // Exit code 0 = all pass, 1 = any failure.
@@ -51,9 +52,8 @@ check('start: everything off -> manual',
 /* ---- (b) inversion regression: ranking semantics ---------------------- */
 // NOTE: the one-track rule (oneTrackHints) keeps only the FIRST pinned
 // segment — a test must pin exactly one segment, as live play does.
-// Pinning all three is silently reduced to one pin, so these tests pin
-// seg2 (the longest segment, 51%) where the fastest vehicle is
-// unambiguous. If anyone ever flips the sort or the labels, they fail.
+// These tests pin seg2 with a synthetic history where the winner split
+// is known exactly, so the expected HIGH/JACKPOT comes from the data.
 function pinSeg2(track) {
   return {
     seg1Hint: { mode: 'unknown', track: null, chance: 50 },
@@ -61,25 +61,39 @@ function pinSeg2(track) {
     seg3Hint: { mode: 'unknown', track: null, chance: 50 }
   };
 }
+function histFor(vehicles, pinSeg, track, wins) {
+  // wins: { vehicle: count } — races with the given pin, same vehicles.
+  var out = [];
+  Object.keys(wins).forEach(function (v) {
+    for (var i = 0; i < wins[v]; i++) {
+      var tracks = ['unknown', 'unknown', 'unknown'];
+      tracks[pinSeg] = track;
+      out.push({ vehicles: vehicles.slice(), tracks: tracks, winner: v, how_won: 'Other', how_won_text: '' });
+    }
+  });
+  return out;
+}
 var dirtPin = pinSeg2('Dirt');
 var dirtRes = app.computePrediction({
   vehicles: ['ORV', 'SUV', 'Monster Truck'],
   seg1Hint: dirtPin.seg1Hint, seg2Hint: dirtPin.seg2Hint, seg3Hint: dirtPin.seg3Hint,
-  speeds: app.DEFAULT_SPEEDS, races: []
+  speeds: app.DEFAULT_SPEEDS, races: histFor(['ORV', 'SUV', 'Monster Truck'], 1, 'Dirt', { 'SUV': 4, 'Monster Truck': 1 })
 });
-check('rank: pin seg2 Dirt, fastest on Dirt (SUV 134) is HIGH',
+check('rank: pin seg2 Dirt, SUV won 4/5 in the data -> HIGH',
   dirtRes.ranked[0].vehicle === 'SUV');
-check('rank: pin seg2 Dirt, slowest on Dirt (Monster Truck 66) is JACKPOT',
-  dirtRes.ranked[2].vehicle === 'Monster Truck');
+check('rank: pin seg2 Dirt, Monster Truck won 1/5 -> MID (ORV, 0 wins, is JACKPOT)',
+  dirtRes.ranked[1].vehicle === 'Monster Truck' && dirtRes.ranked[2].vehicle === 'ORV');
+check('rank: data level is L1 with n=5',
+  dirtRes.dataInfo.level === 1 && dirtRes.dataInfo.matches === 5);
 var desertPin = pinSeg2('Desert');
 var desertRes = app.computePrediction({
   vehicles: ['Supercar', 'Car', 'ATV'],
   seg1Hint: desertPin.seg1Hint, seg2Hint: desertPin.seg2Hint, seg3Hint: desertPin.seg3Hint,
-  speeds: app.DEFAULT_SPEEDS, races: []
+  speeds: app.DEFAULT_SPEEDS, races: histFor(['Supercar', 'Car', 'ATV'], 1, 'Desert', { 'ATV': 4, 'Car': 1 })
 });
-check('rank: pin seg2 Desert, fastest on Desert (ATV 72) is HIGH',
+check('rank: pin seg2 Desert, ATV won 4/5 in the data -> HIGH',
   desertRes.ranked[0].vehicle === 'ATV');
-check('rank: pin seg2 Desert, slowest on Desert (Supercar 40) is JACKPOT',
+check('rank: pin seg2 Desert, Supercar won 0/5 -> JACKPOT',
   desertRes.ranked[2].vehicle === 'Supercar');
 check('rank: ranked is sorted by probability, highest first',
   desertRes.ranked[0].prob >= desertRes.ranked[1].prob &&
@@ -93,6 +107,8 @@ check('labels: suggestion line puts ranked[0] after HIGH and ranked[2] after JAC
     { vehicle: 'Gamma', prob: 0.2 }
   ]) === 'Suggested bet: HIGH — Alpha · MID — Beta · JACKPOT — Gamma');
 // Live-condition single pin, same setup as the handleLiveBet test below.
+// With NO saved races the honest answer is uniform — speeds must NOT
+// invent a HIGH on their own.
 var onePin = app.computePrediction({
   vehicles: ['ORV', 'SUV', 'Monster Truck'],
   seg1Hint: { mode: 'unknown', track: null, chance: 50 },
@@ -100,10 +116,10 @@ var onePin = app.computePrediction({
   seg3Hint: { mode: 'unknown', track: null, chance: 50 },
   speeds: app.DEFAULT_SPEEDS, races: []
 });
-check('rank: one pin (seg2 Dirt), fastest on Dirt (SUV 134) is HIGH',
-  onePin.ranked[0].vehicle === 'SUV');
-check('rank: one pin (seg2 Dirt), slowest on Dirt (Monster Truck 66) is JACKPOT',
-  onePin.ranked[2].vehicle === 'Monster Truck');
+check('rank: one pin (seg2 Dirt) with NO saved races -> uniform 1/3, no invented HIGH',
+  onePin.ranked.every(function (r) { return Math.abs(r.prob - 1 / 3) < 1e-9; }));
+check('rank: speeds alone do NOT make SUV HIGH (SUV is 2nd by input order)',
+  onePin.ranked[0].vehicle === 'ORV' && onePin.ranked[1].vehicle === 'SUV');
 
 /* ---- (c) handleLiveBet return contract (needs a minimal DOM) --------- */
 // The app module was required without a document (as the other test
@@ -158,9 +174,12 @@ var r1 = app.handleLiveBet(freshRow());
 check('live: fresh valid row auto-runs and returns "ran"', r1 === 'ran');
 check('live: after "ran" the wizard is on step 3 with a run',
   app.wizard.step === 3 && app.wizard.ran === true && !!app.wizard.lastRun);
-check('live: after "ran" the run is the row\'s vehicles + pin (SUV fastest on Dirt -> HIGH)',
+check('live: after "ran" the run is the row\'s vehicles + pin (data-only: no history -> uniform, input order first)',
   app.wizard.lastRun.vehicles.join('|') === 'ORV|SUV|Monster Truck' &&
-  app.wizard.lastRun.result.ranked[0].vehicle === 'SUV');
+  app.wizard.lastRun.result.ranked[0].vehicle === 'ORV' &&
+  app.wizard.lastRun.result.dataInfo && app.wizard.lastRun.result.dataInfo.level === 4);
+check('live: after "ran" the run\'s probs sum to 1',
+  Math.abs(app.wizard.lastRun.result.ranked.reduce(function (s, r) { return s + r.prob; }, 0) - 1) < 1e-9);
 var r2 = app.handleLiveBet(freshRow());
 check('live: same row again returns "shown" (result already on screen)', r2 === 'shown');
 check('live: after "shown" the wizard is still on step 3',
