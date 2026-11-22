@@ -37,12 +37,19 @@ var seedHistory = rows.slice().reverse();
 // holds it (seed history is NOT included; callers concat it).
 var VEH = ['SUV', 'ORV', 'Motorcycle'];
 var TRK = ['Dirt', 'unknown', 'unknown'];
-function buildSynthetic(n, rankFn) {
+// includeSeed (default true): whether the 40 seed races are part of the
+// history each synthetic race is built from. The accuracy replays slice
+// the list to the newest N races, so the seed is NOT in the replay
+// history — those histories must be built WITHOUT the seed, or the
+// ranks would not reproduce. The streak replays pass the full list, so
+// they keep the seed.
+function buildSynthetic(n, rankFn, includeSeed) {
   var chrono = [];
   for (var i = 0; i < n; i++) {
     // History before this race, newest-first: synthetic races so far
-    // (reversed) on top of the seed history.
-    var historyBefore = chrono.slice().reverse().concat(seedHistory);
+    // (reversed), on top of the seed history when included.
+    var historyBefore = chrono.slice().reverse();
+    if (includeSeed !== false) historyBefore = historyBefore.concat(seedHistory);
     var res = app.computePrediction({
       vehicles: VEH, seg1Hint: pin('Dirt'), seg2Hint: unknown(), seg3Hint: unknown(),
       speeds: app.DEFAULT_SPEEDS, races: historyBefore
@@ -129,16 +136,20 @@ check('streak: Scribd rows excluded from the window', app.jackpotStreakNote(hist
 check('streak: Scribd-only history -> no note', app.jackpotStreakNote(scribd, app.DEFAULT_SPEEDS) === '');
 
 // --- prediction accuracy (replay) ---
-var accA = app.predictionAccuracy(histA.concat(seedHistory), app.DEFAULT_SPEEDS, 20);
+// Built WITHOUT the seed: the replay slices to the newest 20, so the
+// seed is not in the replay history either — construction and replay
+// see the same history, so the ranks reproduce exactly.
+var histAAcc = buildSynthetic(20, function () { return 1; }, false);
+var accA = app.predictionAccuracy(histAAcc.concat(seedHistory), app.DEFAULT_SPEEDS, 20);
 check('accuracy: 20 rank-1 wins -> high 20', accA.total === 20 && accA.high === 20 && accA.mid === 0 && accA.jackpot === 0 && accA.skipped === 0);
-var mixed = buildSynthetic(10, function (i) { return i < 5 ? 1 : i < 8 ? 2 : 3; });
+var mixed = buildSynthetic(10, function (i) { return i < 5 ? 1 : i < 8 ? 2 : 3; }, false);
 var accM = app.predictionAccuracy(mixed.concat(seedHistory), app.DEFAULT_SPEEDS, 10);
 check('accuracy: mixed ranks counted', accM.total === 10 && accM.high === 5 && accM.mid === 3 && accM.jackpot === 2);
 var bad = [
   { vehicles: ['SUV', 'ORV', 'Motorcycle'], tracks: ['Dirt', 'unknown', 'unknown'], winner: 'ATV', how_won: 'Other', how_won_text: '' },
   { vehicles: ['SUV', 'ORV'], tracks: ['Dirt', 'unknown', 'unknown'], winner: 'SUV', how_won: 'Other', how_won_text: '' }
 ];
-var accB = app.predictionAccuracy(bad.concat(histA).concat(seedHistory), app.DEFAULT_SPEEDS, 22);
+var accB = app.predictionAccuracy(bad.concat(histAAcc).concat(seedHistory), app.DEFAULT_SPEEDS, 22);
 check('accuracy: bad rows skipped, good rows counted', accB.skipped === 2 && accB.total === 20);
 check('accuracy: empty history -> zero', (function () { var a = app.predictionAccuracy([], app.DEFAULT_SPEEDS, 100); return a.total === 0 && a.window === 0; })());
 

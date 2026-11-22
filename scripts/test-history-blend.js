@@ -1,18 +1,13 @@
-// Tests for the HISTORY BLEND gate + ramp + feedback race builder
-// (Lucky Race Predictor).
+// Tests for the HISTORY BLEND ramp (kept as a pure helper) + the
+// DATA-ONLY ranking that replaced the blend in lrp-v19 + the feedback
+// race builder (Lucky Race Predictor).
 //
-// The gate came down from 150 to 30 races on 21 Nov 2026 so every
-// prediction uses all 57 saved races: w = clamp((N - 30) / 120, 0, 0.5),
-// applied only when >= 5 saved races match the exact 3-vehicle set +
-// the same known (pinned) segments. At 57 races the weight is 0.225 —
-// real but modest, so the speed model still decides and history only
-// nudges it.
-//
-// The real 57 saved races do NOT trigger the blend yet (no vehicle set
-// repeats 5 times — the most common set appears 3 times), so the blend
-// is tested here with synthetic histories where the match count and
-// total are controlled exactly. The backtest on the real 40 races is
-// the check that the change does not break real predictions.
+// lrp-v19 retired the blend: the ranking IS the saved data, via
+// dataOnlyRank — no speeds, no odds, no blend. histInfo is always null
+// now. The historyBlendWeight ramp function is still exported (and
+// still unit-tested here) for its own sake, but computePrediction no
+// longer calls it. Synthetic histories below control the match count
+// and totals exactly.
 //
 // Run from the repo root:
 //   node scripts/test-history-blend.js
@@ -40,8 +35,7 @@ var vehicles = ['ORV', 'Car', 'SUV'];
 
 /* Synthetic history: n races, all the same vehicle set + seg1 Desert
    pinned, winners split orvWins / carWins / suvWins (must sum to n).
-   Newest-first order is irrelevant to the gate; decay weights differ
-   per index but the blend weight depends only on n. */
+   Plain counts, no recency decay — every saved race counts the same. */
 function synthHistory(n, orvWins, carWins, suvWins) {
   var out = [];
   var winners = [];
@@ -78,32 +72,34 @@ check('ramp: weight 0.225 at 57 races', approx(app.historyBlendWeight(57), 0.225
 check('ramp: weight capped at 0.5 (90 races)', app.historyBlendWeight(90) === 0.5);
 check('ramp: weight capped at 0.5 (200 races)', app.historyBlendWeight(200) === 0.5);
 
-// --- gate OFF below 30 races even with plenty of matches ---
+// --- lrp-v19: there is NO history blend any more — the ranking IS the
+// data. histInfo is always null, whatever the match count. ---
 var under = predictWith(synthHistory(29, 20, 5, 4));
-check('gate: no histInfo below 30 races', under.histInfo === null);
+check('v19: no histInfo below 30 races (no blend at all)', under.histInfo === null);
 
-// --- gate ON at 30+ races: weight + match count reported ---
+// --- 40 matching races now fire data level L1, with the count reported ---
 var at40 = predictWith(synthHistory(40, 28, 8, 4));
-check('gate: histInfo present at 40 races', at40.histInfo !== null);
-check('gate: 40 matching races counted', at40.histInfo && at40.histInfo.matches === 40);
-check('gate: weight (40-30)/120 reported', at40.histInfo && approx(at40.histInfo.weight, 10 / 120, 1e-9));
+check('v19: no histInfo at 40 races either', at40.histInfo === null);
+check('v19: 40 matching races fire data level L1', at40.dataInfo && at40.dataInfo.level === 1);
+check('v19: L1 match count is 40', at40.dataInfo && at40.dataInfo.matches === 40);
 var at57 = predictWith(synthHistory(57, 40, 10, 7));
-check('gate: weight 0.225 reported at 57 races', at57.histInfo && approx(at57.histInfo.weight, 0.225, 1e-9));
+check('v19: 57 matching races also fire L1', at57.dataInfo && at57.dataInfo.level === 1);
 
-// --- the blend pulls the % toward the historical win rate ---
+// --- the data pulls the % toward the historical win rate ---
 var base = predictWith([]);
 var withHist = predictWith(synthHistory(40, 36, 2, 2)); // ORV won 90% of them
-check('blend: ORV % rises toward its 90% historical win rate',
+check('data: ORV % rises toward its 90% historical win rate',
   probOf(withHist, 'ORV') > probOf(base, 'ORV'));
-check('blend: Car % falls toward its 5% historical win rate',
+check('data: Car % falls toward its 5% historical win rate',
   probOf(withHist, 'Car') < probOf(base, 'Car'));
+check('data: ORV is HIGH from its own data', withHist.ranked[0].vehicle === 'ORV');
 
-// --- the 5-match minimum still applies ---
-var fewMatches = synthHistory(4, 3, 1, 0).concat(synthHistory(36, 20, 10, 6).map(function (r) {
-  // Same total (40) but a different vehicle set, so only 4 match.
+// --- the 2-match minimum still applies ---
+var fewMatches = synthHistory(1, 1, 0, 0).concat(synthHistory(39, 20, 10, 9).map(function (r) {
+  // Same total (40) but a different vehicle set, so only 1 matches.
   return { vehicles: ['ATV', 'Car', 'Monster Truck'], tracks: r.tracks, winner: 'Car' };
 }));
-check('min-matches: no histInfo with only 4 matching races', predictWith(fewMatches).histInfo === null);
+check('min-matches: 1 matching race does NOT fire L1', predictWith(fewMatches).dataInfo.level !== 1);
 
 // --- buildFeedbackRace: the race the wizard feedback saves ---
 var run = {
