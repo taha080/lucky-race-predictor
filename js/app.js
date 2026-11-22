@@ -214,7 +214,8 @@ var wizard = {
                        // 1 = HIGH (main), 2 = MID (backup), 3 = JACKPOT (3rd car).
                        // Legacy saves ('correct' / { wrong, winner }) are
                        // migrated by migrateFeedback() on restore.
-  feedbackSaved: false
+  feedbackSaved: false,
+  feedbackSaving: false // a save is in flight — blocks double taps (see answerFeedback)
 };
 function saveWizard() {
   lsSet(LS_WIZARD, JSON.stringify({
@@ -1098,7 +1099,7 @@ function resetPrediction() {
     renderPredictSeg(n);
   });
   wizard.step = 0; wizard.ran = false; wizard.lastRun = null;
-  wizard.feedback = null; wizard.feedbackSaved = false;
+  wizard.feedback = null; wizard.feedbackSaved = false; wizard.feedbackSaving = false;
   renderPredictVehicles();
   renderPrediction();
   renderFeedback();
@@ -1111,7 +1112,7 @@ function resetPrediction() {
 function invalidateRun() {
   if (!wizard.ran && !wizard.lastRun) return;
   wizard.ran = false; wizard.lastRun = null;
-  wizard.feedback = null; wizard.feedbackSaved = false;
+  wizard.feedback = null; wizard.feedbackSaved = false; wizard.feedbackSaving = false;
   saveWizard();
 }
 
@@ -1176,6 +1177,18 @@ function repeatHistoryNote(segNum, track, vehicles, raceList) {
    rank is 1-based. Pure — unit-tested in Node. */
 function rankName(rank) {
   return rank === 1 ? 'HIGH' : rank === 2 ? 'MID' : 'JACKPOT';
+}
+
+/* One-line bet suggestion for the top of the result, so it is
+   unmistakable which pick is HIGH (main bet), which is MID (backup)
+   and which is JACKPOT (long shot) — the same words the feedback
+   buttons use. Pure — unit-tested in Node. Returns '' when the ranked
+   list is unusable. */
+function suggestionLine(ranked) {
+  if (!Array.isArray(ranked) || ranked.length < 3) return '';
+  var names = ranked.slice(0, 3).map(function (r) { return r && r.vehicle; });
+  if (names.indexOf(undefined) !== -1 || names.indexOf(null) !== -1) return '';
+  return 'Suggested bet: HIGH — ' + names[0] + ' · MID — ' + names[1] + ' · JACKPOT — ' + names[2];
 }
 
 /* Rank (1/2/3) of a winner inside a ranked list, or null when the winner
@@ -1369,6 +1382,7 @@ function runPrediction() {
   wizard.ran = true;
   wizard.feedback = null;
   wizard.feedbackSaved = false;
+  wizard.feedbackSaving = false;
   saveWizard();
   showWizardStep(3);
   renderPrediction();
@@ -1415,13 +1429,18 @@ function renderFeedback() {
   var answered = !!wizard.feedback;
   if (btns) {
     btns.classList.toggle('hidden', answered);
-    if (!answered && wizard.lastRun && wizard.lastRun.result && Array.isArray(wizard.lastRun.result.ranked)) {
-      var ranked = wizard.lastRun.result.ranked;
-      [['fbHighBtn', 1], ['fbMidBtn', 2], ['fbJackpotBtn', 3]].forEach(function (pair) {
-        var b = $(pair[0]);
-        if (b && ranked[pair[1] - 1]) b.textContent = rankName(pair[1]) + ' won — ' + ranked[pair[1] - 1].vehicle;
-      });
-    }
+    /* Buttons carry the vehicle names and are disabled the moment an
+       answer is in flight, so a tap always shows a pressed state
+       instead of looking dead. */
+    [['fbHighBtn', 1], ['fbMidBtn', 2], ['fbJackpotBtn', 3]].forEach(function (pair) {
+      var b = $(pair[0]);
+      if (!b) return;
+      b.disabled = answered || wizard.feedbackSaving;
+      if (!answered && wizard.lastRun && wizard.lastRun.result && Array.isArray(wizard.lastRun.result.ranked)) {
+        var ranked = wizard.lastRun.result.ranked;
+        if (ranked[pair[1] - 1]) b.textContent = rankName(pair[1]) + ' won — ' + ranked[pair[1] - 1].vehicle;
+      }
+    });
   }
   if (savedMsg) {
     if (wizard.feedbackSaved && wizard.feedback) {
@@ -1443,14 +1462,22 @@ function renderFeedback() {
 }
 
 /* One feedback answer: tap which rank won (1 = HIGH, 2 = MID,
-   3 = JACKPOT). Saves the race with that rank's vehicle as the winner. */
+   3 = JACKPOT). Saves the race with that rank's vehicle as the winner.
+   EVERY tap answers visibly: the old code returned silently when there
+   was no run, when the race was already saved, or when the ranked list
+   was missing — on the user's phone a tap did nothing at all, no toast,
+   no state change. Every path below either proceeds or toasts why not.
+   feedbackSaving blocks double taps while the async save runs. */
 function answerFeedback(rank) {
-  if (!wizard.ran || wizard.feedbackSaved || !wizard.lastRun) return;
+  if (!wizard.ran || !wizard.lastRun) { toast('Tap RUN first, then tell us which pick won.'); return; }
+  if (wizard.feedbackSaved) { toast('This race is already saved.'); return; }
+  if (wizard.feedbackSaving || wizard.feedback) { toast('Saving… please wait.'); return; }
   var fb = feedbackForRank(wizard.lastRun, rank);
-  if (!fb) return;
+  if (!fb) { toast('No result to answer for — tap RUN again.'); return; }
   wizard.feedback = fb;
+  wizard.feedbackSaving = true;
   saveWizard();
-  renderFeedback();
+  renderFeedback();   // shows 'Saving…' and disables the buttons at once
   saveFeedbackRace(fb.winner);
 }
 
@@ -1461,21 +1488,42 @@ function answerFeedback(rank) {
    Log Race. The shown result is NOT recomputed after saving — it stays
    frozen for this run; the new race counts from the next run. */
 async function saveFeedbackRace(winner) {
-  if (!wizard.ran || !wizard.lastRun || wizard.feedbackSaved) return;
-  if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
+  if (!wizard.ran || !wizard.lastRun || wizard.feedbackSaved) { wizard.feedbackSaving = false; return; }
+  if (!appAccess().ok) {
+    toast('Premium required to use this app.');
+    wizard.feedback = null; wizard.feedbackSaving = false; saveWizard(); renderFeedback();
+    return;
+  }
   var race = buildFeedbackRace(wizard.lastRun, winner);
-  if (!race) { toast('Could not save this race.'); return; }
+  if (!race) {
+    toast('Could not save this race.');
+    wizard.feedback = null; wizard.feedbackSaving = false; saveWizard(); renderFeedback();
+    return;
+  }
   if (isDuplicateRace(race, races)) {
     toast('This race is already saved.');
-    wizard.feedbackSaved = true;
+    wizard.feedbackSaved = true; wizard.feedbackSaving = false;
     renderFeedback(); saveWizard();
     return;
   }
-  var saved = await cloudInsertRace(race);
+  /* A rejected cloud insert used to leave the box stuck on 'Saving…'
+     forever (feedbackSaved never set, buttons hidden, no retry). Now a
+     failure clears the answer so the user can tap again — the race is
+     only kept once the save actually lands. A null result (demo mode /
+     offline cache) still saves locally, as before. */
+  var saved = null;
+  try {
+    saved = await cloudInsertRace(race);
+  } catch (e) {
+    console.warn('Cloud insert failed:', e && e.message ? e.message : e);
+    toast('Could not reach the server — check connection and tap again.');
+    wizard.feedback = null; wizard.feedbackSaving = false; saveWizard(); renderFeedback();
+    return;
+  }
   if (saved) { race.id = saved.id; race.created_at = saved.created_at || race.created_at; }
   races.unshift(race);
   saveLocalRaces();
-  wizard.feedbackSaved = true;
+  wizard.feedbackSaved = true; wizard.feedbackSaving = false;
   renderFeedback(); saveWizard();
   toast('Race saved. Model updated.');
 }
@@ -1682,6 +1730,11 @@ function renderPrediction() {
   });
   var html = '<div class="result-title">Top picks' +
     (knownParts.length ? ' — known: ' + knownParts.join(', ') : ' — all segments unknown') + '</div>';
+  /* Suggestion line above the cards (user's ask, 22 Nov 2026): one line
+     that says plainly which pick is the HIGH bet, which is MID and which
+     is JACKPOT — the same words the feedback buttons use below. */
+  var suggest = suggestionLine(result.ranked);
+  if (suggest) html += '<div class="suggest-line">' + suggest + '</div>';
   /* All three picks as cards: #1 HIGH (big, highlighted), #2 MID
      (smaller), #3 JACKPOT (smallest) — the least likely vehicle, the
      long shot. Percentages are unchanged. */
@@ -2828,9 +2881,22 @@ function init() {
   $('backToPickBtn').addEventListener('click', function () { showWizardStep(1); });
   $('runBtn').addEventListener('click', runPrediction);
   $('newPredBtn').addEventListener('click', resetPrediction);
-  $('fbHighBtn').addEventListener('click', function () { answerFeedback(1); });
-  $('fbMidBtn').addEventListener('click', function () { answerFeedback(2); });
-  $('fbJackpotBtn').addEventListener('click', function () { answerFeedback(3); });
+  /* Feedback buttons: ONE delegated listener on the box, not three
+     direct bindings. Direct bindings die silently when the buttons are
+     re-created or when an older cached app.js runs against newer HTML —
+     the exact failure the user hit: visible buttons that did nothing.
+     Delegation survives re-renders, and the guard inside answerFeedback
+     makes double taps harmless. */
+  var fbBox = $('feedbackBox');
+  if (fbBox) {
+    fbBox.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (!t) return;
+      if (t.id === 'fbHighBtn') answerFeedback(1);
+      else if (t.id === 'fbMidBtn') answerFeedback(2);
+      else if (t.id === 'fbJackpotBtn') answerFeedback(3);
+    });
+  }
   $('saveRaceBtn').addEventListener('click', saveRace);
   $('cancelEditBtn').addEventListener('click', function () { resetLogForm(); });
   $('logHowText').addEventListener('input', function (e) { logForm.howWonText = e.target.value; });
@@ -2908,6 +2974,9 @@ if (typeof module !== 'undefined' && module.exports) {
     buildFeedbackRace: buildFeedbackRace,
     repeatHistoryNote: repeatHistoryNote,
     rankName: rankName,
+    suggestionLine: suggestionLine,
+    answerFeedback: answerFeedback,
+    wizard: wizard,
     rankOfWinner: rankOfWinner,
     hintsFromTracks: hintsFromTracks,
     isScribdRace: isScribdRace,

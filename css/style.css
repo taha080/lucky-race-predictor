@@ -127,6 +127,9 @@ main { padding: 6px 14px 0; }
    so each is a big tap target with the vehicle name in it. */
 .feedback-btns { display: flex; flex-direction: column; gap: 10px; }
 .feedback-btns .btn { flex: 1; }
+/* A tapped feedback button looks pressed at once (disabled while its
+   save runs) instead of looking dead. */
+.feedback-btns .btn:disabled { opacity: .55; }
 
 /* ---------- Odds ---------- */
 .odds-box { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 16px; }
@@ -141,6 +144,10 @@ main { padding: 6px 14px 0; }
 .result-panel { margin-top: 18px; background: var(--card); color: var(--ink); border-radius: 16px; padding: 14px; }
 .result-empty { color: #5a6b9a; font-size: 14px; text-align: center; padding: 8px 0; }
 .result-title { font-size: 15px; font-weight: 900; margin-bottom: 10px; color: var(--ink); }
+/* Bet suggestion line above the result cards — one line that says
+   plainly which pick is HIGH (main bet), which is MID (backup) and
+   which is JACKPOT, in the same words the feedback buttons use. */
+.suggest-line { background: #fff7cc; border: 1px solid var(--yellow); border-radius: 10px; padding: 8px 10px; margin: 0 0 12px; font-size: 14px; font-weight: 700; color: #3d3d00; }
 .result-card { border-radius: 12px; padding: 12px; margin-bottom: 10px; background: #f2f4ff; border: 2px solid transparent; }
 .result-card.rank-1 { border-color: var(--yellow); background: linear-gradient(180deg, #fff7cc, #ffef9e); }
 .result-label { font-size: 11px; font-weight: 900; letter-spacing: 1.5px; color: var(--purple); margin-bottom: 4px; }
