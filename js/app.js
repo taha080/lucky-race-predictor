@@ -1426,18 +1426,37 @@ function setLiveLateNote(text) {
    until the next bet replaces it; feedback saves exactly as today.
    The countdown starts from the AGE-ADJUSTED remaining seconds
    (decision.remainingSeconds), not the raw timer_seconds — a bet read
-   at 33 s but delivered 8 s later really has 25 s left. */
+   at 33 s but delivered 8 s later really has 25 s left.
+   Returns 'ran' when a new prediction auto-ran and is on screen,
+   'shown' when this bet's result was already on screen (a refresh of
+   the same bet — duplicate / already-shown), and false otherwise
+   (live off, stale / invalid row, premium, manual-busy). START-immediate
+   (lrp-v18) reads this so START knows whether a live result is showing. */
 function handleLiveBet(row) {
-  if (!liveEnabled) return;
+  if (!liveEnabled) return false;
   var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBet, isManualRunInProgress());
-  if (decision.action === 'premium') { toast('Premium required for live predictions.'); return; }
+  if (decision.action === 'premium') { toast('Premium required for live predictions.'); return false; }
   if (decision.action === 'ignore' && decision.reason === 'manual-busy') {
     toast('Live bet ignored — finish your manual run first.');
     var status = $('liveStatus');
     if (status) status.textContent = 'Live bet arrived while you were picking — ignored, your run is untouched.';
-    return;
+    return false;
   }
-  if (decision.action !== 'run') return;
+  if (decision.action !== 'run') {
+    /* Duplicate / already-shown: this bet was already auto-run, so its
+       result may still be on screen — START should stay on it instead
+       of dropping to manual picking. Only when the displayed run really
+       is this bet (the user may have run a different race by hand
+       since, or reset the wizard). */
+    if (decision.reason === 'duplicate' || decision.reason === 'already-shown') {
+      var v = validateLiveBet(row, Date.now());
+      if (v.ok && wizard.ran &&
+          currentBetKey() === liveBetKey({ vehicles: v.vehicles, tracks: v.tracks })) {
+        return 'shown';
+      }
+    }
+    return false;
+  }
   /* Remember WHEN this bet was processed and what the timer read:
      decideLiveBet needs both to tell the NEXT race with the identical
      line-up apart from a refresh of this same bet screen
@@ -1449,7 +1468,7 @@ function handleLiveBet(row) {
   };
   resetPrediction();
   var applied = applyLiveBet(row);
-  if (!applied.ok) return; // validated a moment ago — never expected
+  if (!applied.ok) return false; // validated a moment ago — never expected
   renderPredictVehicles();
   renderPredictSeg(1); renderPredictSeg(2); renderPredictSeg(3);
   var countdownFrom = (typeof decision.remainingSeconds === 'number') ? decision.remainingSeconds : decision.timerSeconds;
@@ -1462,17 +1481,52 @@ function handleLiveBet(row) {
     if (st) st.textContent = 'Live auto-predict ON — last bet arrived LATE (' + countdownFrom + 's left).';
   }
   toast(decision.late ? 'Live bet received late — prediction ready, timer nearly gone.' : 'Live bet received — prediction ready.');
+  return 'ran';
 }
 
 /* The bet that may already be live when the app opens / subscribes:
    fetch the user's single live_bets row once and handle it like any
-   other row (the 60 s staleness check drops it when the bet is over). */
+   other row (the 60 s staleness check drops it when the bet is over).
+   Returns what handleLiveBet returned ('ran' | 'shown' | false) so
+   START-immediate knows whether a live result is on screen. */
 async function fetchLatestLiveBet() {
-  if (!sb || !currentUser) return;
+  if (!sb || !currentUser) return false;
   try {
     var res = await sb.from('live_bets').select('*').eq('user_id', currentUser.id).maybeSingle();
-    if (res && res.data) handleLiveBet(res.data);
+    if (res && res.data) return handleLiveBet(res.data);
   } catch (e) { /* no live bet yet — normal, nothing to do */ }
+  return false;
+}
+
+/* START-immediate decision (pure, unit-tested): what START does after
+   the live-bet fetch. 'live' = the current live bet's result is on
+   screen — stay there. 'manual' = go to step 1 (pick the 3 vehicles).
+   fetchResult is 'ran' | 'shown' | false from fetchLatestLiveBet. */
+function startLiveDecision(liveOn, signedIn, accessOk, fetchResult) {
+  if (liveOn && signedIn && accessOk && (fetchResult === 'ran' || fetchResult === 'shown')) return 'live';
+  return 'manual';
+}
+
+/* START-immediate (lrp-v18, user's order): pressing START first pulls
+   the latest live bet and runs it at once — no waiting for the next
+   Realtime event. When there is no fresh live bet, say so plainly
+   instead of waiting silently, and go to manual picking as before.
+   The manual flow is untouched: live off, signed out, or no access
+   all fall through to step 1 exactly as START behaved before. */
+async function startWithLiveBet() {
+  var fetchResult = false;
+  var canFetch = liveEnabled && sb && currentUser && appAccess().ok;
+  if (canFetch) fetchResult = await fetchLatestLiveBet();
+  if (startLiveDecision(liveEnabled, !!currentUser, appAccess().ok, fetchResult) === 'live') {
+    if (fetchResult === 'shown') { showTab('predict'); showWizardStep(3); }
+    return;
+  }
+  if (canFetch) {
+    toast('No live bet yet — pick the 3 vehicles yourself.');
+    var st = $('liveStatus');
+    if (st) st.textContent = 'No live bet yet — waiting for the Reader…';
+  }
+  showWizardStep(1);
 }
 
 /* Subscribe to the user's own live_bets row over Realtime. No-op when
@@ -3389,7 +3443,7 @@ function init() {
     liveToggle.checked = liveEnabled;
     liveToggle.addEventListener('change', function (e) { setLiveEnabled(e.target.checked); });
   }
-  $('startBtn').addEventListener('click', function () { showWizardStep(1); });
+  $('startBtn').addEventListener('click', startWithLiveBet);
   $('toPinBtn').addEventListener('click', function () { showWizardStep(2); });
   $('backToStartBtn').addEventListener('click', function () { showWizardStep(0); });
   $('backToPickBtn').addEventListener('click', function () { showWizardStep(1); });
@@ -3509,6 +3563,10 @@ if (typeof module !== 'undefined' && module.exports) {
     currentBetKey: currentBetKey,
     decideLiveBet: decideLiveBet,
     applyLiveBet: applyLiveBet,
+    handleLiveBet: handleLiveBet,
+    fetchLatestLiveBet: fetchLatestLiveBet,
+    startLiveDecision: startLiveDecision,
+    startWithLiveBet: startWithLiveBet,
     LIVE_STALE_MS: LIVE_STALE_MS,
     rankOfWinner: rankOfWinner,
     hintsFromTracks: hintsFromTracks,
