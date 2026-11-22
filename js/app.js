@@ -210,7 +210,10 @@ var wizard = {
   step: 0,
   ran: false,
   lastRun: null,      // { vehicles[3], tracks[3], main, result, ms }
-  feedback: null,     // null | 'correct' | { wrong: true, winner: name }
+  feedback: null,     // null | { rank: 1|2|3, winner: name } — which pick won:
+                       // 1 = HIGH (main), 2 = MID (backup), 3 = JACKPOT (3rd car).
+                       // Legacy saves ('correct' / { wrong, winner }) are
+                       // migrated by migrateFeedback() on restore.
   feedbackSaved: false
 };
 function saveWizard() {
@@ -254,7 +257,7 @@ function loadWizardState() {
       Array.isArray(s.lastRun.tracks) && s.lastRun.tracks.length === 3 &&
       s.lastRun.result && Array.isArray(s.lastRun.result.ranked)) ? s.lastRun : null;
     if (!wizard.lastRun) wizard.ran = false;
-    wizard.feedback = s.feedback || null;
+    wizard.feedback = migrateFeedback(s.feedback, wizard.lastRun);
     wizard.feedbackSaved = !!s.feedbackSaved;
     if (wizard.feedbackSaved && !wizard.ran) wizard.feedbackSaved = false;
     return wizard.ran;
@@ -1164,6 +1167,166 @@ function repeatHistoryNote(segNum, track, vehicles, raceList) {
   return 'Seen before: ' + times + (times === 1 ? ' time' : ' times') + ' — ' + parts.join(', ');
 }
 
+/* HIGH / MID / JACKPOT — the three picks as the user and his friends
+   call them when they play live together:
+     HIGH    = main bet, the vehicle best for the shown track (rank 1)
+     MID     = backup, second most likely (rank 2)
+     JACKPOT = least likely of the 3 (rank 3), kept last for its high
+               return — the long shot.
+   rank is 1-based. Pure — unit-tested in Node. */
+function rankName(rank) {
+  return rank === 1 ? 'HIGH' : rank === 2 ? 'MID' : 'JACKPOT';
+}
+
+/* Rank (1/2/3) of a winner inside a ranked list, or null when the winner
+   is not one of the ranked vehicles (bad imported data — seen in 2
+   Scribd rows). Pure — unit-tested in Node. */
+function rankOfWinner(ranked, winner) {
+  if (!Array.isArray(ranked)) return null;
+  for (var i = 0; i < ranked.length; i++) {
+    if (ranked[i].vehicle === winner) return i + 1;
+  }
+  return null;
+}
+
+/* Hints for a replay, built from a saved race's tracks: a known track is
+   a pin, 'unknown' (or a missing/invalid entry) stays Unknown. The
+   engine's one-track rule (oneTrackHints) still applies inside
+   computePrediction — with 3 known tracks only the first stays pinned,
+   which is the model's own rule, not a choice made here. Pure. */
+function hintsFromTracks(tracks) {
+  return [0, 1, 2].map(function (i) {
+    var t = tracks && tracks[i];
+    if (t && t !== UNKNOWN_TRACK && TRACKS.indexOf(t) !== -1) return { mode: 'pin', track: t, chance: 100 };
+    return { mode: 'unknown', track: null, chance: 50 };
+  });
+}
+
+/* Scribd-sheet rows are a friend's sheet, not bets the user played —
+   their how_won_text starts with 'Scribd sheet'. They were also
+   bulk-inserted, so they carry the insert time as created_at and would
+   swamp any "last N bets" window. The jackpot streak below therefore
+   looks at the user's OWN bets only. */
+function isScribdRace(r) {
+  return !!(r && typeof r.how_won_text === 'string' && r.how_won_text.indexOf('Scribd sheet') === 0);
+}
+
+/* Jackpot streak watch (display-only — never changes the picks).
+   Looks at the last 15 OWN bets (see isScribdRace). For each one the
+   model is replayed with the history available BEFORE that race
+   (computePrediction, history = everything older in the list), and the
+   actual winner is ranked 1st (HIGH), 2nd (MID) or 3rd (JACKPOT).
+   Returns the watch note when JACKPOT won ZERO times in the last 15,
+   otherwise '' — and '' when fewer than 15 own bets exist yet (not
+   enough history for a 15-streak). Pure — unit-tested in Node. */
+var JACKPOT_STREAK_WINDOW = 15;
+function jackpotStreakNote(raceList, speedsMap) {
+  var own = (raceList || []).filter(function (r) { return !isScribdRace(r); });
+  if (own.length < JACKPOT_STREAK_WINDOW) return '';
+  var windowRaces = own.slice(0, JACKPOT_STREAK_WINDOW); // newest-first
+  var jackpotWins = 0;
+  windowRaces.forEach(function (race) {
+    if (!Array.isArray(race.vehicles) || race.vehicles.length !== 3) return;
+    if (!race.winner) return;
+    /* History before this race: everything older in the full list.
+       `own` is newest-first, so older races sit at higher indices;
+       history must stay newest-first too (the model weights by recency). */
+    var idx = (raceList || []).indexOf(race);
+    var historyBefore = idx >= 0 ? raceList.slice(idx + 1) : [];
+    var hints = hintsFromTracks(race.tracks);
+    var res;
+    try {
+      res = computePrediction({
+        vehicles: race.vehicles,
+        seg1Hint: hints[0], seg2Hint: hints[1], seg3Hint: hints[2],
+        speeds: speedsMap, races: historyBefore
+      });
+    } catch (e) { return; }
+    if (rankOfWinner(res.ranked, race.winner) === 3) jackpotWins += 1;
+  });
+  if (jackpotWins > 0) return '';
+  return 'Jackpot watch: no JACKPOT win in the last 15 — you could try JACKPOT for the next 1–2 bets. (Streaks don\'t change the odds — your call.)';
+}
+
+/* Prediction accuracy, replayed over saved races: for each race (oldest
+   first, up to `limit` most recent) the model re-predicts it from the
+   history available BEFORE that race, and the actual winner is counted
+   as a HIGH (rank 1), MID (rank 2) or JACKPOT (rank 3) win. Races whose
+   winner is not one of the 3 vehicles (bad imported data) are skipped,
+   never counted. This is a backtest, not a live prediction — it uses the
+   CURRENT speed table for every replay, so it is an approximation when
+   speeds were edited after the race. Pure — unit-tested in Node. */
+var PREDICTION_ACCURACY_LIMIT = 300;
+function predictionAccuracy(raceList, speedsMap, limit) {
+  var out = { total: 0, high: 0, mid: 0, jackpot: 0, skipped: 0, window: 0 };
+  var list = (raceList || []).slice(); // newest-first, as the app holds it
+  if (typeof limit === 'number' && limit > 0) list = list.slice(0, limit);
+  out.window = list.length;
+  var chrono = list.slice().reverse(); // oldest first
+  chrono.forEach(function (race, j) {
+    if (!Array.isArray(race.vehicles) || race.vehicles.length !== 3) { out.skipped += 1; return; }
+    if (!race.winner) { out.skipped += 1; return; }
+    /* This race's position in the newest-first list: chrono index j is
+       newest-first index (list.length - 1 - j); history before it is
+       everything after that position. */
+    var newestIdx = list.length - 1 - j;
+    var historyBefore = list.slice(newestIdx + 1);
+    var hints = hintsFromTracks(race.tracks);
+    var res;
+    try {
+      res = computePrediction({
+        vehicles: race.vehicles,
+        seg1Hint: hints[0], seg2Hint: hints[1], seg3Hint: hints[2],
+        speeds: speedsMap, races: historyBefore
+      });
+    } catch (e) { out.skipped += 1; return; }
+    var rank = rankOfWinner(res.ranked, race.winner);
+    if (rank === null) { out.skipped += 1; return; }
+    out.total += 1;
+    if (rank === 1) out.high += 1;
+    else if (rank === 2) out.mid += 1;
+    else out.jackpot += 1;
+  });
+  return out;
+}
+
+/* Feedback answer for a rank: which vehicle won, given the run's ranked
+   list. rank 1 = HIGH (main), 2 = MID (backup), 3 = JACKPOT (the third
+   vehicle). Pure — unit-tested in Node. Returns null for a bad rank or
+   a run without a ranked list. */
+function feedbackForRank(lastRun, rank) {
+  if (!lastRun || !lastRun.result || !Array.isArray(lastRun.result.ranked)) return null;
+  if (rank !== 1 && rank !== 2 && rank !== 3) return null;
+  var entry = lastRun.result.ranked[rank - 1];
+  if (!entry || !entry.vehicle) return null;
+  return { rank: rank, winner: entry.vehicle };
+}
+
+/* Migrate a saved feedback value (localStorage) to the 3-button shape
+   { rank, winner }. Legacy shapes: 'correct' (MAIN won) and
+   { wrong: true, winner } (the winner was picked from the 3 vehicles —
+   its rank is read off the run's ranked list, or 3 when it is not in
+   the list). Returns null when the value is unusable. Pure — unit-tested. */
+function migrateFeedback(feedback, lastRun) {
+  if (!feedback) return null;
+  if (feedback === 'correct') {
+    return lastRun && lastRun.main ? { rank: 1, winner: lastRun.main } : null;
+  }
+  if (typeof feedback === 'object') {
+    if ((feedback.rank === 1 || feedback.rank === 2 || feedback.rank === 3) && feedback.winner) {
+      if (lastRun && lastRun.vehicles && lastRun.vehicles.indexOf(feedback.winner) !== -1) {
+        return { rank: feedback.rank, winner: feedback.winner };
+      }
+      return null;
+    }
+    if (feedback.wrong && feedback.winner && lastRun) {
+      var rank = rankOfWinner(lastRun.result && lastRun.result.ranked, feedback.winner);
+      return { rank: rank === null ? 3 : rank, winner: feedback.winner };
+    }
+  }
+  return null;
+}
+
 function runPrediction() {
   var gate = predictionAllowed();
   if (!gate.ok) {
@@ -1197,6 +1360,10 @@ function runPrediction() {
     main: result.ranked[0].vehicle,
     result: result,
     repeatNote: repeatHistoryNote(pinnedSeg, pinnedTrack, pred.vehicles, races),
+    /* Jackpot streak watch: replay the last 15 own bets and say whether
+       JACKPOT won at all. Computed once at RUN time and frozen with the
+       result — later saves never change it. */
+    streakNote: jackpotStreakNote(races, speeds),
     ms: Math.max(0, Math.round(t1 - t0))
   };
   wizard.ran = true;
@@ -1227,43 +1394,43 @@ function buildFeedbackRace(lastRun, winner) {
   };
 }
 
-/* Feedback box under the result (step 3). States:
-   - not answered: Correct / Wrong buttons.
-   - Wrong tapped, winner not yet picked: the 3 run vehicles as buttons.
-   - saved: buttons hidden, a short confirmation line instead.
-   The box is only meaningful after a RUN; it is hidden otherwise. */
+/* Feedback box under the result (step 3). Three buttons — one per pick:
+     HIGH won (the main pick), MID won (the backup pick), JACKPOT won
+     (the third vehicle, which was neither the main nor the backup pick).
+   Before this, feedback was only Correct/Wrong, so a backup win had to
+   be reported as Wrong — which counted a right backup call as a miss.
+   Tapping a button saves the race with that pick's vehicle as the winner
+   (same insert path + duplicate protection as Log Race). After saving,
+   the buttons hide and a short confirmation line shows instead.
+   The box is only meaningful after a RUN; it is hidden otherwise.
+   Button labels carry the actual vehicle names from the run, so there
+   is no guessing which button is which. */
 function renderFeedback() {
   var box = $('feedbackBox');
   if (!box) return;
   box.classList.toggle('hidden', !wizard.ran);
   if (!wizard.ran) return;
   var btns = $('feedbackBtns');
-  var winnerRow = $('fbWinnerRow');
   var savedMsg = $('fbSavedMsg');
   var answered = !!wizard.feedback;
-  if (btns) btns.classList.toggle('hidden', answered);
-  var showWinnerRow = wizard.feedback && wizard.feedback.wrong && !wizard.feedback.winner && !wizard.feedbackSaved;
-  if (winnerRow) winnerRow.classList.toggle('hidden', !showWinnerRow);
-  if (showWinnerRow) {
-    var wb = $('fbWinnerBtns');
-    wb.innerHTML = '';
-    wizard.lastRun.vehicles.forEach(function (name) {
-      var b = el('button', 'track-btn', name);
-      b.addEventListener('click', function () {
-        wizard.feedback = { wrong: true, winner: name };
-        saveWizard();
-        renderFeedback();
-        saveFeedbackRace(name);
+  if (btns) {
+    btns.classList.toggle('hidden', answered);
+    if (!answered && wizard.lastRun && wizard.lastRun.result && Array.isArray(wizard.lastRun.result.ranked)) {
+      var ranked = wizard.lastRun.result.ranked;
+      [['fbHighBtn', 1], ['fbMidBtn', 2], ['fbJackpotBtn', 3]].forEach(function (pair) {
+        var b = $(pair[0]);
+        if (b && ranked[pair[1] - 1]) b.textContent = rankName(pair[1]) + ' won — ' + ranked[pair[1] - 1].vehicle;
       });
-      wb.appendChild(b);
-    });
+    }
   }
   if (savedMsg) {
     if (wizard.feedbackSaved && wizard.feedback) {
-      var w = wizard.feedback === 'correct' ? wizard.lastRun.main : wizard.feedback.winner;
-      savedMsg.textContent = wizard.feedback === 'correct'
-        ? 'Saved — ' + w + ' won, the prediction was right. The model learned from this race.'
-        : 'Saved — ' + w + ' actually won. The model learned from this race.';
+      var w = wizard.feedback.winner;
+      var msg;
+      if (wizard.feedback.rank === 1) msg = 'Saved — ' + w + ' won, the HIGH pick was right. The model learned from this race.';
+      else if (wizard.feedback.rank === 2) msg = 'Saved — ' + w + ' won, the MID pick was right. The model learned from this race.';
+      else msg = 'Saved — ' + w + ' won (JACKPOT). Neither the HIGH nor the MID pick won. The model learned from this race.';
+      savedMsg.textContent = msg;
       savedMsg.classList.remove('hidden');
     } else if (answered) {
       savedMsg.textContent = 'Saving…';
@@ -1275,13 +1442,24 @@ function renderFeedback() {
   }
 }
 
-/* Save the last run as a race, from the feedback box. The winner is
-   either the MAIN pick (feedback "Correct") or the vehicle the user
-   tapped (feedback "Wrong"). Tracks are the run's tracks with unknowns
-   stored as 'unknown'; patterns/odds are empty, how_won is 'Other'.
-   Same insert path + duplicate protection as Log Race. The shown
-   result is NOT recomputed after saving — it stays frozen for this run;
-   the new race counts from the next run. */
+/* One feedback answer: tap which rank won (1 = HIGH, 2 = MID,
+   3 = JACKPOT). Saves the race with that rank's vehicle as the winner. */
+function answerFeedback(rank) {
+  if (!wizard.ran || wizard.feedbackSaved || !wizard.lastRun) return;
+  var fb = feedbackForRank(wizard.lastRun, rank);
+  if (!fb) return;
+  wizard.feedback = fb;
+  saveWizard();
+  renderFeedback();
+  saveFeedbackRace(fb.winner);
+}
+
+/* Save the last run as a race, from the feedback box. The winner is the
+   vehicle of the rank the user tapped (HIGH / MID / JACKPOT). Tracks are
+   the run's tracks with unknowns stored as 'unknown'; patterns/odds are
+   empty, how_won is 'Other'. Same insert path + duplicate protection as
+   Log Race. The shown result is NOT recomputed after saving — it stays
+   frozen for this run; the new race counts from the next run. */
 async function saveFeedbackRace(winner) {
   if (!wizard.ran || !wizard.lastRun || wizard.feedbackSaved) return;
   if (!appAccess().ok) { toast('Premium required to use this app.'); return; }
@@ -1502,33 +1680,44 @@ function renderPrediction() {
   Object.keys(knownSegs).forEach(function (k) {
     knownParts.push('Seg ' + (parseInt(k, 10) + 1) + ' ' + knownSegs[k]);
   });
-  var top = result.ranked.slice(0, 2);
   var html = '<div class="result-title">Top picks' +
     (knownParts.length ? ' — known: ' + knownParts.join(', ') : ' — all segments unknown') + '</div>';
-  top.forEach(function (r, idx) {
+  /* All three picks as cards: #1 HIGH (big, highlighted), #2 MID
+     (smaller), #3 JACKPOT (smallest) — the least likely vehicle, the
+     long shot. Percentages are unchanged. */
+  result.ranked.forEach(function (r, idx) {
     var others = vehicles.filter(function (v) { return v !== r.vehicle; });
-    var reason = buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
     var pct = Math.min(99, Math.round(r.prob * 100));
-    /* No odds text here: the wizard has no odds step, so there are no
-       odds to show and no expected return to compute. */
-    // #1 is the MAIN PICK (big, highlighted); #2 is the smaller BACKUP PICK.
-    var isMain = idx === 0;
-    var label = isMain ? 'MAIN PICK' : 'BACKUP PICK';
-    html += '<div class="result-card rank-' + (idx + 1) + (isMain ? ' main-pick' : ' backup-pick') + '">' +
+    var label, cls;
+    if (idx === 0) { label = 'HIGH · MAIN BET'; cls = 'rank-1 main-pick'; }
+    else if (idx === 1) { label = 'MID · BACKUP'; cls = 'rank-2 backup-pick'; }
+    else { label = 'JACKPOT'; cls = 'rank-3 jackpot-pick'; }
+    /* The jackpot card gets no speed reason — a "fastest on X" line
+       would read as a recommendation for the least likely pick. Instead
+       it states plainly that it is the long shot, with the game's own
+       odds for that vehicle (the same odds shown on the vehicle cards). */
+    var reason = idx === 2
+      ? 'Least likely of the 3 — the long shot (game odds ' + vehicleByName(r.vehicle).odds + '×).'
+      : buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
+    html += '<div class="result-card ' + cls + '">' +
       '<div class="result-label">' + label + '</div>' +
       '<div class="result-head"><span class="result-name">' + r.vehicle + '</span>' +
       '<span class="result-conf">' + pct + '%</span></div>' +
       '<div class="conf-bar"><div class="conf-fill" style="width:' + pct + '%"></div></div>' +
       '<div class="result-reason">' + reason + '</div></div>';
   });
-  var third = result.ranked[2];
-  html += '<div class="result-foot">3rd: ' + third.vehicle + ' — ' + Math.min(99, Math.round(third.prob * 100)) + '%' +
-    (result.histInfo ? ' · blended with history (' + result.histInfo.matches + ' matching races, weight ' +
-      Math.round(result.histInfo.weight * 100) + '%)' : '') +
-    ' · computed in ' + ms + ' ms</div>';
+  html += '<div class="result-foot">' +
+    (result.histInfo ? 'Blended with history (' + result.histInfo.matches + ' matching races, weight ' +
+      Math.round(result.histInfo.weight * 100) + '%) · ' : '') +
+    'computed in ' + ms + ' ms</div>';
   /* Repeat-history note, frozen at RUN time ('' = never seen before). */
   if (wizard.lastRun.repeatNote) {
     html += '<div class="repeat-note">' + wizard.lastRun.repeatNote + '</div>';
+  }
+  /* Jackpot streak note, frozen at RUN time ('' = a jackpot won in the
+     last 15 own bets, so nothing to watch). */
+  if (wizard.lastRun.streakNote) {
+    html += '<div class="jackpot-note">' + wizard.lastRun.streakNote + '</div>';
   }
   panel.innerHTML = html;
 
@@ -1892,6 +2081,44 @@ function renderStats() {
     wrap.appendChild(bar);
     fBox.appendChild(wrap);
   });
+
+  /* Prediction accuracy (HIGH / MID / JACKPOT split), replayed: the
+     model re-predicts each saved race from the races before it, and the
+     actual winner is counted as a HIGH, MID or JACKPOT win. This is the
+     three-way split the 3-button feedback feeds — before it, a backup
+     win was reported as "Wrong" and the split could not be measured.
+     The replay is the heaviest thing on this tab (one full prediction
+     per race), so it only runs while the Stats tab is actually open —
+     renderStats also runs at startup, when the Predict tab is showing. */
+  var aBox = $('statsAccuracy');
+  if (aBox) {
+    var statsActive = (function () {
+      var sec = $('tab-stats');
+      return sec && sec.classList.contains('active');
+    })();
+    if (!statsActive) {
+      aBox.innerHTML = '';
+    } else {
+      var acc = null;
+      try { acc = predictionAccuracy(races, speeds, PREDICTION_ACCURACY_LIMIT); } catch (e) { acc = null; }
+      aBox.innerHTML = '';
+      if (acc && acc.total > 0) {
+        var accPct = function (n) { return acc.total ? Math.round(n / acc.total * 100) + '%' : '—'; };
+        [['HIGH won', acc.high], ['MID won', acc.mid], ['JACKPOT won', acc.jackpot]].forEach(function (row) {
+          var r = el('div', 'stat-row');
+          r.innerHTML = '<span class="s-name">' + row[0] + '</span>' +
+            '<span>' + row[1] + '/' + acc.total + '</span><span class="s-val">' + accPct(row[1]) + '</span>';
+          aBox.appendChild(r);
+        });
+        aBox.appendChild(el('p', 'help-text',
+          'Replayed over the last ' + acc.window + ' saved races: the model re-predicts each race from the races before it. ' +
+          'HIGH + MID won ' + accPct(acc.high + acc.mid) + ' of races.' +
+          (acc.skipped ? ' (' + acc.skipped + ' skipped: the winner was not one of the 3 vehicles.)' : '')));
+      } else {
+        aBox.appendChild(el('p', 'help-text', 'Not enough races yet to replay predictions.'));
+      }
+    }
+  }
 }
 
 function racesToCsv() {
@@ -2601,19 +2828,9 @@ function init() {
   $('backToPickBtn').addEventListener('click', function () { showWizardStep(1); });
   $('runBtn').addEventListener('click', runPrediction);
   $('newPredBtn').addEventListener('click', resetPrediction);
-  $('fbCorrectBtn').addEventListener('click', function () {
-    if (!wizard.ran || wizard.feedbackSaved || !wizard.lastRun) return;
-    wizard.feedback = 'correct';
-    saveWizard();
-    renderFeedback();
-    saveFeedbackRace(wizard.lastRun.main);
-  });
-  $('fbWrongBtn').addEventListener('click', function () {
-    if (!wizard.ran || wizard.feedbackSaved) return;
-    wizard.feedback = { wrong: true, winner: null };
-    saveWizard();
-    renderFeedback();
-  });
+  $('fbHighBtn').addEventListener('click', function () { answerFeedback(1); });
+  $('fbMidBtn').addEventListener('click', function () { answerFeedback(2); });
+  $('fbJackpotBtn').addEventListener('click', function () { answerFeedback(3); });
   $('saveRaceBtn').addEventListener('click', saveRace);
   $('cancelEditBtn').addEventListener('click', function () { resetLogForm(); });
   $('logHowText').addEventListener('input', function (e) { logForm.howWonText = e.target.value; });
@@ -2690,6 +2907,14 @@ if (typeof module !== 'undefined' && module.exports) {
     historyBlendWeight: historyBlendWeight,
     buildFeedbackRace: buildFeedbackRace,
     repeatHistoryNote: repeatHistoryNote,
+    rankName: rankName,
+    rankOfWinner: rankOfWinner,
+    hintsFromTracks: hintsFromTracks,
+    isScribdRace: isScribdRace,
+    feedbackForRank: feedbackForRank,
+    migrateFeedback: migrateFeedback,
+    jackpotStreakNote: jackpotStreakNote,
+    predictionAccuracy: predictionAccuracy,
     oddsBlendWeight: oddsBlendWeight,
     segmentLengths: segmentLengths,
     resolveVehicleName: resolveVehicleName,
