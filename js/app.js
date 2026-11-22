@@ -537,114 +537,152 @@ function applyConfidenceGuard(final, unknownCount) {
   });
 }
 
-/* Core prediction. Returns { ranked: [{vehicle, prob, modelProb}], dist1, dist2, dist3, histInfo } */
-function computePrediction(input) {
-  var vehicles = input.vehicles;
-  var speedsMap = input.speeds;
-  var raceList = input.races || [];
-  var hints = oneTrackHints([input.seg1Hint, input.seg2Hint, input.seg3Hint]);
-  var knownSegs = pinnedSegments(hints);
-  var segLen = segmentLengths();
+/* ============================================================================
+   DATA-ONLY RANKING (lrp-v19 — the user's order, 23 Nov 2026)
+   Rank the 3 vehicles PURELY from the saved races: no speeds, no segment
+   lengths, no odds, nothing invented. Hierarchical back-off — use the
+   most specific level with enough matches:
+     L1: same 3 vehicles + same known segment + same known track
+     L2: same 3 vehicles + same known track (any segment)
+     L3: same 3 vehicles (any tracks)
+     L4: each vehicle's overall win rate across all saved races
+   DATA_ONLY_MIN_MATCHES (2): a level fires only with at least this many
+   matching races, else fall to the next level. Chosen by replay on the
+   346 local races (thresholds mode): minMatches 2 + alpha 2 scored
+   best (HIGH 39.2%, top-2 69.2%) of the four combos tested. At the chosen level the
+   win share is Laplace-smoothed toward the next level's share
+   (DATA_ONLY_ALPHA = 2 pseudo-races) so a small sample can never show
+   100% or 0% — the % stays traceable to the data. Plain counts, no
+   recency decay: every saved race counts the same. Shares are clamped
+   to [1%, 99%] and renormalised so the three sum to exactly 1.
+   Returns { ranked: [{vehicle, prob, wins}], dataInfo } where dataInfo
+   is { level, levelLabel, matches, counts, shares, overallWins,
+   overallAppearances, overallRates }. */
+var DATA_ONLY_MIN_MATCHES = 2;
+var DATA_ONLY_ALPHA = 2;
 
-  var dists = hints.map(function (h, i) { return segmentDistribution(i, knownSegs, h, raceList); });
-
-  var probs = {};
-  vehicles.forEach(function (v) { probs[v] = 0; });
-
-  // Enumerate all track combos (up to 6x6x6), weighted by P(t1)*P(t2)*P(t3).
-  // A pinned segment is a point mass, so it contributes only its one track.
-  TRACKS.forEach(function (t1) {
-    TRACKS.forEach(function (t2) {
-      TRACKS.forEach(function (t3) {
-        var combo = [t1, t2, t3];
-        var w = combo.reduce(function (acc, t, i) { return acc * (dists[i][t] || 0); }, 1);
-        if (w <= 0) return;
-        var times = vehicles.map(function (v) {
-          return segLen[0] / speedsMap[v][combo[0]] + segLen[1] / speedsMap[v][combo[1]] + segLen[2] / speedsMap[v][combo[2]];
-        });
-        var min = Math.min.apply(null, times);
-        var winners = [];
-        times.forEach(function (t, i) { if (t === min) winners.push(i); });
-        winners.forEach(function (i) { probs[vehicles[i]] += w / winners.length; });
-      });
-    });
-  });
-
-  // History blend (only with plenty of data and enough exact matches).
-  // Matches share the same 3-vehicle set AND the same known (pinned) segments.
-  // No pinned segment is required — with none pinned, any race with the
-  // same vehicle set matches.
-  var blended = {};
-  vehicles.forEach(function (v) { blended[v] = probs[v]; });
-  var histInfo = null;
-  var N = raceList.length;
-  if (N >= HISTORY_BLEND_MIN_TOTAL) {
-    var setKey = vehicles.slice().sort().join('|');
-    var knownKeys = Object.keys(knownSegs);
-    var matches = [];
-    raceList.forEach(function (r, i) {
-      if (r.tracks && r.vehicles && r.vehicles.slice().sort().join('|') === setKey &&
-          knownKeys.every(function (k) { return r.tracks[k] === knownSegs[k]; })) {
-        matches.push({ race: r, weight: decayWeight(i, historyHalfLife()) });
+function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
+  var minMatches = (opts && typeof opts.minMatches === 'number') ? opts.minMatches : DATA_ONLY_MIN_MATCHES;
+  var alpha = (opts && typeof opts.alpha === 'number') ? opts.alpha : DATA_ONLY_ALPHA;
+  var races = raceList || [];
+  var setKey = vehicles.slice().sort().join('|');
+  function setOf(r) {
+    return r && Array.isArray(r.vehicles) && r.vehicles.length === 3
+      ? r.vehicles.slice().sort().join('|') : '';
+  }
+  function hasTrack(r, t) {
+    return r && Array.isArray(r.tracks) && r.tracks.indexOf(t) !== -1;
+  }
+  var l1 = [], l2 = [], l3 = [];
+  var overallWins = {}, overallApp = {};
+  vehicles.forEach(function (v) { overallWins[v] = 0; overallApp[v] = 0; });
+  races.forEach(function (r) {
+    if (!r || !Array.isArray(r.vehicles)) return;
+    vehicles.forEach(function (v) {
+      if (r.vehicles.indexOf(v) !== -1) {
+        overallApp[v] += 1;
+        if (r.winner === v) overallWins[v] += 1;
       }
     });
-    if (matches.length >= HISTORY_BLEND_MIN_MATCHES) {
-      var w = historyBlendWeight(N);
-      var histCounts = {};
-      var histTotal = 0;
-      vehicles.forEach(function (v) { histCounts[v] = 0; });
-      matches.forEach(function (m) {
-        if (histCounts[m.race.winner] !== undefined) {
-          histCounts[m.race.winner] += m.weight;
-          histTotal += m.weight;
-        }
-      });
-      vehicles.forEach(function (v) {
-        var hp = histTotal > 0 ? histCounts[v] / histTotal : 0;
-        blended[v] = (1 - w) * probs[v] + w * hp;
-      });
-      histInfo = { matches: matches.length, weight: w, total: N };
-    }
+    if (setOf(r) !== setKey) return;
+    l3.push(r);
+    if (knownTrack && hasTrack(r, knownTrack)) l2.push(r);
+    if (knownSeg !== null && knownSeg !== undefined && knownTrack &&
+        Array.isArray(r.tracks) && r.tracks[knownSeg] === knownTrack) l1.push(r);
+  });
+  function winsOf(list) {
+    var c = {};
+    vehicles.forEach(function (v) { c[v] = 0; });
+    list.forEach(function (r) { if (c[r.winner] !== undefined) c[r.winner] += 1; });
+    return c;
   }
-
-  // Odds blend: the game's odds imply a chance per vehicle —
-  // (1 / odds), normalised across the picked vehicles. Higher odds
-  // mean the game thinks the vehicle is LESS likely to win, so its
-  // implied chance is lower. Blended (ODDS_BLEND_WEIGHT, default
-  // 50/50) with the track+speed+history probability, so changing the
-  // odds on the Predict tab moves the shown % live — and can flip
-  // MAIN / BACKUP. Only when all 3 vehicles have sane odds (> 0,
-  // finite); otherwise the odds are ignored and nothing changes.
-  var final = {};
-  vehicles.forEach(function (v) { final[v] = blended[v]; });
-  var oddsInfo = null;
-  var oddsMap = input.odds || {};
-  var ow = oddsBlendWeight();
-  if (ow > 0 && vehicles.every(function (v) {
-    return typeof oddsMap[v] === 'number' && isFinite(oddsMap[v]) && oddsMap[v] > 0;
-  })) {
-    var invSum = 0;
-    vehicles.forEach(function (v) { invSum += 1 / oddsMap[v]; });
-    var implied = {};
-    vehicles.forEach(function (v) { implied[v] = (1 / oddsMap[v]) / invSum; });
+  function normalize(shares) {
+    var total = vehicles.reduce(function (s, v) { return s + (shares[v] || 0); }, 0);
+    var out = {};
+    vehicles.forEach(function (v) { out[v] = total > 0 ? shares[v] / total : 1 / vehicles.length; });
+    return out;
+  }
+  // L4 — overall win rates, smoothed toward uniform 1/3, then shares.
+  var rate4 = {};
+  vehicles.forEach(function (v) {
+    rate4[v] = (overallWins[v] + alpha / vehicles.length) / (overallApp[v] + alpha);
+  });
+  var share4 = normalize(rate4);
+  function smooth(counts, n, prior) {
+    var s = {};
     vehicles.forEach(function (v) {
-      final[v] = (1 - ow) * blended[v] + ow * implied[v];
+      s[v] = (counts[v] + alpha * prior[v]) / (n + alpha);
     });
-    oddsInfo = { weight: ow, implied: implied };
+    return normalize(s);
   }
-
-  // Confidence guard (see applyConfidenceGuard): while segments are only
-  // guessed (not pinned), no vehicle may look certain. The 99 display
-  // cap in the render code stays as a backstop.
-  applyConfidenceGuard(final, 3 - Object.keys(knownSegs).length);
-
-  var ranked = vehicles.map(function (v) {
-    return { vehicle: v, prob: final[v], modelProb: probs[v], oddsProb: oddsInfo ? oddsInfo.implied[v] : null };
-  }).sort(function (a, b) { return b.prob - a.prob; });
-
-  return { ranked: ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: histInfo, oddsInfo: oddsInfo };
+  var counts3 = winsOf(l3), share3 = smooth(counts3, l3.length, share4);
+  var counts2 = winsOf(l2), share2 = knownTrack ? smooth(counts2, l2.length, share3) : share3;
+  var counts1 = winsOf(l1), share1 = (knownSeg !== null && knownSeg !== undefined && knownTrack)
+    ? smooth(counts1, l1.length, share2) : share2;
+  var level = 4, levelLabel = 'overall win rates', matches = races.length, counts = overallWins, shares = share4;
+  if (l3.length >= minMatches) { level = 3; levelLabel = 'same cars'; matches = l3.length; counts = counts3; shares = share3; }
+  if (knownTrack && l2.length >= minMatches) { level = 2; levelLabel = 'same cars + ' + knownTrack + ' anywhere'; matches = l2.length; counts = counts2; shares = share2; }
+  if (knownSeg !== null && knownSeg !== undefined && knownTrack && l1.length >= minMatches) { level = 1; levelLabel = 'same cars + Seg ' + (knownSeg + 1) + ' ' + knownTrack; matches = l1.length; counts = counts1; shares = share1; }
+  var overallRates = {};
+  vehicles.forEach(function (v) { overallRates[v] = overallApp[v] > 0 ? overallWins[v] / overallApp[v] : 0; });
+  // Clamp to [1%, 99%] then renormalise so the three sum to exactly 1.
+  var clamped = {};
+  vehicles.forEach(function (v) { clamped[v] = clamp(shares[v], 0.01, 0.99); });
+  shares = normalize(clamped);
+  var ranked = vehicles.map(function (v, i) {
+    return { vehicle: v, prob: shares[v], wins: counts[v] || 0, index: i };
+  }).sort(function (a, b) {
+    if (b.prob !== a.prob) return b.prob - a.prob;
+    if (share4[b.vehicle] !== share4[a.vehicle]) return share4[b.vehicle] - share4[a.vehicle];
+    return a.index - b.index;
+  }).map(function (r) { return { vehicle: r.vehicle, prob: r.prob, wins: r.wins }; });
+  return {
+    ranked: ranked,
+    dataInfo: {
+      level: level, levelLabel: levelLabel, matches: matches, counts: counts, shares: shares,
+      overallWins: overallWins, overallAppearances: overallApp, overallRates: overallRates
+    }
+  };
 }
 
+/* Short human reason for a data-only pick: what the saved races say.
+   dataInfo is the dataOnlyRank result info. */
+function buildDataReason(vehicle, dataInfo) {
+  if (!dataInfo) return 'Ranked from the saved races.';
+  var w = (dataInfo.counts && dataInfo.counts[vehicle]) || 0;
+  var n = dataInfo.matches || 0;
+  if (dataInfo.level === 4) {
+    var app4 = (dataInfo.overallAppearances && dataInfo.overallAppearances[vehicle]) || 0;
+    var rate = (dataInfo.overallRates && dataInfo.overallRates[vehicle]) || 0;
+    if (app4 <= 0) return 'No saved races for this vehicle yet — ranked on the overall picture.';
+    return 'Overall win rate ' + Math.round(rate * 100) + '% across ' + app4 + ' races';
+  }
+  if (n <= 0) return 'No matching races yet — ranked on overall win rate.';
+  if (w > 0) return 'Won ' + w + ' of ' + n + ' ' + dataInfo.levelLabel + ' races';
+  return 'No wins in ' + n + ' ' + dataInfo.levelLabel + ' races — ranked on overall win rate';
+}
+
+/* Core prediction. Returns { ranked: [{vehicle, prob, wins}], dist1, dist2, dist3, histInfo: null, oddsInfo: null, dataInfo }.
+   lrp-v19: ranking is DATA-ONLY — see dataOnlyRank. dist1/2/3 are the
+   empirical per-segment track distributions (kept for the return shape);
+   they do NOT influence the ranking. */
+function computePrediction(input) {
+  var vehicles = input.vehicles;
+  var raceList = input.races || [];
+  // lrp-v19: ranking is DATA-ONLY (the user's order). Speeds, segment
+  // lengths and odds are NOT used for the ranking any more — the % for
+  // each vehicle comes only from the saved races, via dataOnlyRank.
+  // input.speeds / input.odds are accepted (old callers still pass
+  // them) and ignored.
+  var hints = oneTrackHints([input.seg1Hint, input.seg2Hint, input.seg3Hint]);
+  var knownSegs = pinnedSegments(hints);
+  var knownKeys = Object.keys(knownSegs);
+  var knownSeg = knownKeys.length ? parseInt(knownKeys[0], 10) : null;
+  var knownTrack = knownSeg !== null ? knownSegs[knownSeg] : null;
+  var dists = hints.map(function (h, i) { return segmentDistribution(i, knownSegs, h, raceList); });
+  var res = dataOnlyRank(vehicles, knownSeg, knownTrack, raceList);
+  return { ranked: res.ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: null, oddsInfo: null, dataInfo: res.dataInfo };
+}
 /* Short human reason for a pick, given the distributions used.
    knownSegs = { segmentIndex: track } for pinned segments.
    dists = [dist1, dist2, dist3] probability distributions per segment. */
@@ -1432,7 +1470,7 @@ function setLiveLateNote(text) {
    the same bet — duplicate / already-shown), and false otherwise
    (live off, stale / invalid row, premium, manual-busy). START-immediate
    (lrp-v18) reads this so START knows whether a live result is showing. */
-function handleLiveBet(row) {
+function handleLiveBetInner(row) {
   if (!liveEnabled) return false;
   var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBet, isManualRunInProgress());
   if (decision.action === 'premium') { toast('Premium required for live predictions.'); return false; }
@@ -1484,6 +1522,16 @@ function handleLiveBet(row) {
   return 'ran';
 }
 
+/* Wrapper around the inner handler: when a live bet actually runs
+   (or is already shown), wake any START that is waiting for one
+   (see waitForLiveBet). Returns what the inner handler returned
+   ('ran' | 'shown' | false). */
+function handleLiveBet(row) {
+  var result = handleLiveBetInner(row);
+  if (result === 'ran' || result === 'shown') notifyLiveWaiters(result);
+  return result;
+}
+
 /* The bet that may already be live when the app opens / subscribes:
    fetch the user's single live_bets row once and handle it like any
    other row (the 60 s staleness check drops it when the bet is over).
@@ -1507,24 +1555,104 @@ function startLiveDecision(liveOn, signedIn, accessOk, fetchResult) {
   return 'manual';
 }
 
+/* How long START waits for a live bet to arrive before going manual
+   (lrp-v19). Covers a bet landing a second after START is pressed and
+   a Realtime subscription that was slow to wake. */
+var LIVE_START_WAIT_MS = 5000;
+
+/* Waiters for a live bet: START registers here while it waits, and
+   handleLiveBet wakes them when a bet actually runs (or is shown).
+   Pure apart from the timer — unit-tested in Node. */
+var liveStartWaiters = [];
+function notifyLiveWaiters(result) {
+  if (!liveStartWaiters.length) return;
+  var ws = liveStartWaiters.slice(); liveStartWaiters = [];
+  ws.forEach(function (fn) { try { fn(result); } catch (e) {} });
+}
+function waitForLiveBet(ms) {
+  return new Promise(function (resolve) {
+    var timer = setTimeout(function () {
+      liveStartWaiters = liveStartWaiters.filter(function (fn) { return fn !== onResult; });
+      resolve(false);
+    }, ms);
+    function onResult(result) {
+      clearTimeout(timer);
+      resolve(result);
+    }
+    liveStartWaiters.push(onResult);
+  });
+}
+
+/* What the live_bets table actually holds right now, so START can say
+   WHY there is no bet instead of going silent. States: 'signed-out' |
+   'none' | 'fresh' | 'stale' | 'no-known-track' | 'vehicles' |
+   'tracks' | 'error'. 'fresh' means a runnable bet is in the table
+   (validateLiveBet passed). */
+async function liveBetStatus() {
+  if (!sb || !currentUser) return { state: 'signed-out', ageSeconds: null };
+  try {
+    var res = await sb.from('live_bets').select('*').eq('user_id', currentUser.id).maybeSingle();
+    if (!res || !res.data) return { state: 'none', ageSeconds: null };
+    var row = res.data;
+    var ts = Date.parse(row.updated_at || row.created_at || '');
+    var age = isNaN(ts) ? null : Math.max(0, Math.round((Date.now() - ts) / 1000));
+    var v = validateLiveBet(row, Date.now());
+    if (v.ok) return { state: 'fresh', ageSeconds: age };
+    if (v.reason === 'stale') return { state: 'stale', ageSeconds: age };
+    return { state: v.reason, ageSeconds: age };
+  } catch (e) { return { state: 'error', ageSeconds: null }; }
+}
+
+/* Plain-English reason for a liveBetStatus state (pure, unit-tested). */
+function liveBetStatusText(state, ageSeconds) {
+  var age = (typeof ageSeconds === 'number') ? ageSeconds : null;
+  if (state === 'none') return 'No live bet yet — the Reader hasn\'t sent a bet. Check the Reader is ON.';
+  if (state === 'stale') return 'Last live bet ' + (age === null ? 'a while' : age + 's') + ' ago — the Reader isn\'t sending bets right now. Check the Reader is ON.';
+  if (state === 'no-known-track') return 'Reader sent a bet but no track was read — waiting for the next bet.';
+  if (state === 'vehicles' || state === 'tracks') return 'Reader sent a bet the app can\'t read — waiting for the next bet.';
+  if (state === 'signed-out') return 'Sign in to use live predictions.';
+  if (state === 'error') return 'Couldn\'t reach the live-bet table — check your connection.';
+  return 'No live bet yet — waiting for the Reader…';
+}
+
 /* START-immediate (lrp-v18, user's order): pressing START first pulls
    the latest live bet and runs it at once — no waiting for the next
    Realtime event. When there is no fresh live bet, say so plainly
    instead of waiting silently, and go to manual picking as before.
    The manual flow is untouched: live off, signed out, or no access
    all fall through to step 1 exactly as START behaved before. */
+/* START (lrp-v19 — robust, user's order): pressing START first pulls
+   the latest live bet and runs it at once — no waiting for the next
+   Realtime event. When the table holds no fresh bet, START waits up to
+   LIVE_START_WAIT_MS for one to arrive (covers a bet landing a second
+   later and a Realtime subscription that was slow to wake), then
+   re-fetches once (covers a dead subscription), and only then falls
+   back to manual picking — with the specific reason shown, never
+   silence. The manual flow is untouched: live off, signed out, or no
+   access all fall through to step 1 exactly as START behaved before. */
 async function startWithLiveBet() {
-  var fetchResult = false;
   var canFetch = liveEnabled && sb && currentUser && appAccess().ok;
+  var fetchResult = false;
   if (canFetch) fetchResult = await fetchLatestLiveBet();
   if (startLiveDecision(liveEnabled, !!currentUser, appAccess().ok, fetchResult) === 'live') {
     if (fetchResult === 'shown') { showTab('predict'); showWizardStep(3); }
     return;
   }
   if (canFetch) {
-    toast('No live bet yet — pick the 3 vehicles yourself.');
+    /* Nothing fresh in the table — a bet may be arriving right now
+       (the Reader pushes during play), so wait briefly for a Realtime
+       event, then re-fetch once in case the subscription is dead. */
+    await waitForLiveBet(LIVE_START_WAIT_MS);
+    fetchResult = await fetchLatestLiveBet();
+    if (startLiveDecision(liveEnabled, !!currentUser, appAccess().ok, fetchResult) === 'live') {
+      if (fetchResult === 'shown') { showTab('predict'); showWizardStep(3); }
+      return;
+    }
+    var status = await liveBetStatus();
+    var text = liveBetStatusText(status.state, status.ageSeconds);
+    toast(text + ' Pick the 3 vehicles yourself.');
     var st = $('liveStatus');
-    if (st) st.textContent = 'No live bet yet — waiting for the Reader…';
+    if (st) st.textContent = text;
   }
   showWizardStep(1);
 }
@@ -1690,11 +1818,11 @@ function showWizardStep(n) {
 }
 
 /* RUN: compute the prediction for the current picks and show step 3.
-   No odds are passed — the wizard has no odds step, so the odds blend
-   is skipped and oddsInfo stays null. Compute is ~2ms; no artificial
-   delay is added. The result is snapshotted (wizard.lastRun): later
-   renderPrediction() calls re-render the same run instead of silently
-   changing the numbers when new data arrives. */
+   No odds are passed — the wizard has no odds step, and lrp-v19 ranks
+   purely from the saved races (no odds blend, no speeds). Compute is
+   ~2ms; no artificial delay is added. The result is snapshotted
+   (wizard.lastRun): later renderPrediction() calls re-render the same
+   run instead of silently changing the numbers when new data arrives. */
 /* Repeat-history note under a prediction result (display-only — it never
    changes the prediction). Finds past saved races with the SAME segment
    number + SAME track in that segment + the SAME 3 vehicles
@@ -1826,8 +1954,8 @@ function jackpotStreakNote(raceList, speedsMap) {
    as a HIGH (rank 1), MID (rank 2) or JACKPOT (rank 3) win. Races whose
    winner is not one of the 3 vehicles (bad imported data) are skipped,
    never counted. This is a backtest, not a live prediction — it uses the
-   CURRENT speed table for every replay, so it is an approximation when
-   speeds were edited after the race. Pure — unit-tested in Node. */
+   data available before each race, so it is a fair backtest of the
+   CURRENT model. Pure — unit-tested in Node. */
 var PREDICTION_ACCURACY_LIMIT = 300;
 function predictionAccuracy(raceList, speedsMap, limit) {
   var out = { total: 0, high: 0, mid: 0, jackpot: 0, skipped: 0, window: 0 };
@@ -2309,9 +2437,13 @@ function renderPrediction() {
        would read as a recommendation for the least likely pick. Instead
        it states plainly that it is the long shot, with the game's own
        odds for that vehicle (the same odds shown on the vehicle cards). */
-    var reason = idx === 2
-      ? 'Least likely of the 3 — the long shot (game odds ' + vehicleByName(r.vehicle).odds + '×).'
-      : buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds);
+    var reason = (result.dataInfo)
+      ? (idx === 2
+          ? 'Least likely of the 3 — ' + buildDataReason(r.vehicle, result.dataInfo) + ' (game odds ' + vehicleByName(r.vehicle).odds + '×).'
+          : buildDataReason(r.vehicle, result.dataInfo))
+      : (idx === 2
+          ? 'Least likely of the 3 — the long shot (game odds ' + vehicleByName(r.vehicle).odds + '×).'
+          : buildReason(r.vehicle, others, knownSegs, [result.dist1, result.dist2, result.dist3], speeds));
     html += '<div class="result-card ' + cls + '">' +
       '<div class="result-label">' + label + '</div>' +
       '<div class="result-head"><span class="result-name">' + r.vehicle + '</span>' +
@@ -2320,8 +2452,9 @@ function renderPrediction() {
       '<div class="result-reason">' + reason + '</div></div>';
   });
   html += '<div class="result-foot">' +
-    (result.histInfo ? 'Blended with history (' + result.histInfo.matches + ' matching races, weight ' +
-      Math.round(result.histInfo.weight * 100) + '%) · ' : '') +
+    (result.dataInfo ? 'Data: ' + result.dataInfo.levelLabel + ' · n=' + result.dataInfo.matches + ' races · ' :
+      (result.histInfo ? 'Blended with history (' + result.histInfo.matches + ' matching races, weight ' +
+      Math.round(result.histInfo.weight * 100) + '%) · ' : '')) +
     'computed in ' + ms + ' ms</div>';
   /* Repeat-history note, frozen at RUN time ('' = never seen before). */
   if (wizard.lastRun.repeatNote) {
@@ -2334,10 +2467,12 @@ function renderPrediction() {
   }
   panel.innerHTML = html;
 
-  line.textContent = 'Assumed tracks — Seg 1: ' + formatDist(result.dist1) +
-    ' · Seg 2: ' + formatDist(result.dist2) +
-    ' · Seg 3: ' + formatDist(result.dist3) +
-    '. These are probabilities from saved races and your hints, not certainties.';
+  line.textContent = result.dataInfo
+    ? 'Data-only pick — ' + result.dataInfo.levelLabel + ' · ' + result.dataInfo.matches + ' matching races. No speeds, no odds, no guesses — the % comes from the saved races.'
+    : 'Assumed tracks — Seg 1: ' + formatDist(result.dist1) +
+      ' · Seg 2: ' + formatDist(result.dist2) +
+      ' · Seg 3: ' + formatDist(result.dist3) +
+      '. These are probabilities from saved races and your hints, not certainties.';
 }
 
 /* 35-second betting timer (visual aid only). */
@@ -3530,6 +3665,10 @@ if (typeof module !== 'undefined' && module.exports) {
     isDuplicateRace: isDuplicateRace,
     isValidRaceTracks: isValidRaceTracks,
     computePrediction: computePrediction,
+    dataOnlyRank: dataOnlyRank,
+    DATA_ONLY_MIN_MATCHES: DATA_ONLY_MIN_MATCHES,
+    DATA_ONLY_ALPHA: DATA_ONLY_ALPHA,
+    buildDataReason: buildDataReason,
     applyConfidenceGuard: applyConfidenceGuard,
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
@@ -3568,6 +3707,11 @@ if (typeof module !== 'undefined' && module.exports) {
     startLiveDecision: startLiveDecision,
     startWithLiveBet: startWithLiveBet,
     LIVE_STALE_MS: LIVE_STALE_MS,
+    LIVE_START_WAIT_MS: LIVE_START_WAIT_MS,
+    liveBetStatus: liveBetStatus,
+    liveBetStatusText: liveBetStatusText,
+    waitForLiveBet: waitForLiveBet,
+    notifyLiveWaiters: notifyLiveWaiters,
     rankOfWinner: rankOfWinner,
     hintsFromTracks: hintsFromTracks,
     isScribdRace: isScribdRace,
