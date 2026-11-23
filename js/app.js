@@ -43,12 +43,23 @@
      auto-drives the wizard from the row (vehicles + the one shown track
      + the synced countdown). The countdown is age-adjusted (timer_seconds
      minus the time since updated_at); a bet arriving with under 10 s left
-     is still predicted but marked LATE. A live bet never clobbers a manual
-     run already in progress (wizard steps 1–2). Pure validators/deciders
+     is still predicted but marked LATE. Pure validators/deciders
      are unit-tested in scripts/test-lrp-v16.js and scripts/test-lrp-v17.js.
+   - LIVE HARDENING (lrp-v21): Realtime is NOT trusted alone — a 4 s REST
+     poll re-fetches the live row while live mode is on, a dead Realtime
+     channel is torn down and re-subscribed on backoff, returning to the
+     Predict tab or to a visible tab re-fetches at once, and a live bet
+     always wins over an unfinished manual pick (steps 1–2 with no run
+     yet) instead of being dropped as 'manual-busy'. Pure helpers are
+     unit-tested in scripts/test-lrp-v21.js.
    ========================================================================== */
 
 'use strict';
+
+/* Running version, shown on screen (header badge) so the user can see
+   at a glance which deploy he is on — a cached old version is visible
+   instead of silent. Bump on every deploy. */
+var APP_VERSION = 'v21';
 
 /* ---------------- Static game data (from the game screenshots) ------------ */
 
@@ -962,6 +973,12 @@ function showTab(name) {
   if (name === 'stats') renderStats();
   if (name === 'log') renderRaceList();
   if (name === 'account') renderAccount();
+  /* lrp-v21: coming back to Predict re-fetches the live row at once —
+     a bet that arrived (or was missed) while the user was on another
+     tab is picked up immediately instead of waiting for START. The
+     in-flight guard in fetchLatestLiveBet makes this safe to call
+     from handleLiveBet's own showTab('predict'). */
+  if (name === 'predict') fetchLatestLiveBet();
   applyTabLocks();
   window.scrollTo(0, 0);
 }
@@ -1092,9 +1109,17 @@ function glyphHtml(v) {
      - The shown countdown is age-adjusted: timer_seconds minus the time
        since updated_at (liveRemainingSeconds). A bet arriving with under
        10 s left is still predicted but marked LATE on the result.
-     - A live bet never clobbers a manual run in progress (wizard steps
-       1–2: picking vehicles / pinning the track) — it is ignored with a
-       small notice instead.
+     - A live bet ALWAYS wins over an unfinished manual pick (wizard
+       steps 1–2 with no run yet — lrp-v21): the manual pick is for the
+       same race and is at most 4 taps, while dropping the live bet is
+       exactly what the user reported ("the Predictor never auto-shows
+       a bet"). The old 'manual-busy' drop is gone — decideLiveBet no
+       longer takes a manual-busy flag. A finished manual run (step 3)
+       is still replaced by the next live bet, as before.
+     - Realtime is NOT trusted alone (lrp-v21): a 4 s REST poll
+       re-fetches the live row while live mode is on; a dead Realtime
+       channel is torn down and re-subscribed on backoff; returning to
+       the Predict tab, or to a visible tab, re-fetches at once.
      - The wizard is driven with the existing functions only
        (resetPrediction -> applyLiveBet -> runPrediction); the prediction
        model, odds blend, confidence guard and duplicate protection are
@@ -1315,36 +1340,23 @@ function currentBetKey() {
   return '';
 }
 
-/* True while the user is mid-wizard on a manual run: step 2 (pinning
-   the track — the 3 vehicles are already picked) or step 1 once at
-   least one vehicle is picked. Step 1 with nothing picked yet is NOT
-   a run in progress: START drops the user here when no live bet was
-   waiting, and a live bet arriving a moment later loses nothing by
-   taking over — with the old unconditional step-1 guard it was
-   thrown away as 'manual-busy' even though the user had not tapped
-   anything. Step 0 is the START screen (nothing to lose) and step 3
-   is a finished run — a live bet for the NEXT race is meant to
-   replace that result, so it is not "in progress". Reads the wizard
-   and pred globals — unit-tested via app.wizard / app.pred. */
-function isManualRunInProgress() {
-  if (wizard.step === 2) return true;
-  if (wizard.step === 1) return pred.vehicles.length > 0;
-  return false;
-}
-
 /* Decide what to do with one live-bet row. `accessOk` is appAccess().ok;
    `lastBet` is liveLastBet — the record of the last bet already
    auto-run ({ key, updatedAtMs, timerSeconds }), or a bare betKey
-   string / '' for legacy callers; `manualBusy` is
-   isManualRunInProgress(). Returns
+   string / '' for legacy callers. Returns
      { action: 'run', vehicles, tracks, timerSeconds, remainingSeconds,
        late, key } — auto-drive it; `late` is true when under
        LIVE_LATE_SECONDS were left when the bet arrived (still predict,
        but mark it LATE)
      { action: 'ignore', reason } — stale / invalid / duplicate /
-       already shown / manual-busy; nothing to do
+       already shown; nothing to do
      { action: 'premium', reason: 'premium' } — signed in but no premium:
        do NOT auto-run; the caller toasts instead.
+   lrp-v21: there is NO manual-busy drop any more. A live bet always
+   wins over an unfinished manual pick (wizard steps 1–2, no run yet):
+   the pick is for the same race and is at most 4 taps, while dropping
+   the bet is exactly the failure the user reported. (v17–v20 dropped
+   it as 'manual-busy'; that guard is deleted, not bypassed.)
    DEDUP: a row whose vehicles + shown track match the last auto-run
    bet is a duplicate — UNLESS isNewLiveBet says it is the NEXT race
    with the identical line-up (updated_at gap >= LIVE_NEW_BET_GAP_MS,
@@ -1352,13 +1364,11 @@ function isManualRunInProgress() {
    matching run on screen IS that last auto-run bet; a MANUAL run of
    the same line-up stays ignored ('already-shown'), because the user
    already predicted this exact race by hand.
-   Pure apart from the manualBusy flag the caller passes in —
-   unit-tested. */
-function decideLiveBet(row, accessOk, nowMs, lastBet, manualBusy) {
+   Pure — unit-tested. */
+function decideLiveBet(row, accessOk, nowMs, lastBet) {
   if (accessOk === false) return { action: 'premium', reason: 'premium' };
   var v = validateLiveBet(row, nowMs);
   if (!v.ok) return { action: 'ignore', reason: v.reason };
-  if (manualBusy) return { action: 'ignore', reason: 'manual-busy' };
   var key = liveBetKey({ vehicles: v.vehicles, tracks: v.tracks });
   var lastIsSame = (typeof lastBet === 'string')
     ? (!!lastBet && lastBet === key)
@@ -1490,6 +1500,9 @@ function updateLiveFreshness() {
   el.textContent = liveFreshnessText(liveLastRowAtMs, liveLastRowSummary);
   var stale = liveLastRowAtMs === null || (Date.now() - liveLastRowAtMs > LIVE_STALE_MS);
   el.classList.toggle('warn', stale);
+  /* lrp-v21: a fresh bet reads as fresh, not just "not stale" — green
+     tint + bold, so a working live flow is obvious at a glance. */
+  el.classList.toggle('fresh', !stale);
 }
 
 /* Remember the last live_bets row the app saw, for the freshness
@@ -1551,18 +1564,14 @@ function setLiveLateNote(text) {
    Returns 'ran' when a new prediction auto-ran and is on screen,
    'shown' when this bet's result was already on screen (a refresh of
    the same bet — duplicate / already-shown), and false otherwise
-   (live off, stale / invalid row, premium, manual-busy). START-immediate
+   (live off, stale / invalid row, premium). START-immediate
    (lrp-v18) reads this so START knows whether a live result is showing. */
 function handleLiveBetInner(row) {
   if (!liveEnabled) return false;
-  var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBet, isManualRunInProgress());
+  /* lrp-v21: NO manual-busy drop — a live bet always wins over an
+     unfinished manual pick (steps 1–2, no run yet). See decideLiveBet. */
+  var decision = decideLiveBet(row, appAccess().ok, Date.now(), liveLastBet);
   if (decision.action === 'premium') { toast('Premium required for live predictions.'); return false; }
-  if (decision.action === 'ignore' && decision.reason === 'manual-busy') {
-    toast('Live bet ignored — finish your manual run first.');
-    var status = $('liveStatus');
-    if (status) status.textContent = 'Live bet arrived while you were picking — ignored, your run is untouched.';
-    return false;
-  }
   if (decision.action !== 'run') {
     /* Duplicate / already-shown: this bet was already auto-run, so its
        result may still be on screen — START should stay on it instead
@@ -1620,13 +1629,32 @@ function handleLiveBet(row) {
    fetch the user's single live_bets row once and handle it like any
    other row (the 60 s staleness check drops it when the bet is over).
    Returns what handleLiveBet returned ('ran' | 'shown' | false) so
-   START-immediate knows whether a live result is on screen. */
+   START-immediate knows whether a live result is on screen.
+   lrp-v21: an in-flight guard stops overlapping fetches (poll +
+   START + tab-switch can all fire at once), and consecutive network
+   failures are counted — after 3 the status line says the table
+   cannot be reached, instead of failing exactly like "no live bet". */
 async function fetchLatestLiveBet() {
   if (!sb || !currentUser) return false;
+  if (liveFetchInFlight) return false;
+  liveFetchInFlight = true;
+  var row = null;
   try {
     var res = await sb.from('live_bets').select('*').eq('user_id', currentUser.id).maybeSingle();
-    if (res && res.data) return handleLiveBet(res.data);
-  } catch (e) { /* no live bet yet — normal, nothing to do */ }
+    liveFetchFails = 0;
+    row = (res && res.data) ? res.data : null;
+  } catch (e) {
+    /* Network / server error — NOT "no live bet". Count it so the
+       status line can say so after a few in a row. */
+    liveFetchFails += 1;
+    if (liveFetchFails >= 3 && liveEnabled) {
+      var st = $('liveStatus');
+      if (st) st.textContent = 'Couldn\'t reach the live-bet table — check your connection.';
+    }
+  } finally {
+    liveFetchInFlight = false;
+  }
+  if (row) return handleLiveBet(row);
   return false;
 }
 
@@ -1645,7 +1673,8 @@ function startLiveDecision(liveOn, signedIn, accessOk, fetchResult) {
    after START is still 25+ s inside the 35 s betting window, so
    waiting 10 s still leaves plenty of time to bet. With 5 s, a slow
    push arrived after START had already dropped to manual picking,
-   and the manual-busy guard then threw the bet away. */
+   and the (since removed, lrp-v21) manual-busy guard then threw the
+   bet away. */
 var LIVE_START_WAIT_MS = 10000;
 
 /* Waiters for a live bet: START registers here while it waits, and
@@ -1716,8 +1745,12 @@ function liveBetStatusText(state, ageSeconds) {
    later and a Realtime subscription that was slow to wake), then
    re-fetches once (covers a dead subscription), and only then falls
    back to manual picking — with the specific reason shown, never
-   silence. The manual flow is untouched: live off, signed out, or no
-   access all fall through to step 1 exactly as START behaved before. */
+   silence. (v20 also dropped a late bet as 'manual-busy' when START
+   had already fallen through to step 1 with picks; lrp-v21 removed
+   that drop, so the wait is now a belt-and-braces path, not the only
+   way a late bet can run.) The manual flow is untouched: live off,
+   signed out, or no access all fall through to step 1 exactly as
+   START behaved before. */
 async function startWithLiveBet() {
   var canFetch = liveEnabled && sb && currentUser && appAccess().ok;
   var fetchResult = false;
@@ -1746,12 +1779,31 @@ async function startWithLiveBet() {
 }
 
 /* Subscribe to the user's own live_bets row over Realtime. No-op when
-   live mode is off, signed out, or already subscribed. */
+   live mode is off, signed out, or already subscribed.
+   lrp-v21: a dead channel is NOT left in place. The subscribe callback
+   handles failure states (CHANNEL_ERROR / TIMED_OUT / CLOSED) by
+   tearing the channel down and scheduling a retry on backoff — the
+   poll tick drives the retry, so a dropped socket recovers on its own
+   instead of silently starving the tab. liveActive stays false until
+   SUBSCRIBED confirms: the badge must never claim a live subscription
+   that never opened. */
 function subscribeLiveBets() {
   if (typeof document === 'undefined') return false;
   if (!liveEnabled || !sb || !currentUser) return false;
-  if (liveChannel) return true;
+  if (liveChannel) {
+    /* A channel object sitting there does NOT mean a live subscription:
+       it may be a zombie (open but never confirmed SUBSCRIBED). A
+       healthy confirmed channel returns true; a zombie past its window
+       is torn down and re-subscribed below; a fresh attempt still in
+       flight returns true. Without this, every entry point that calls
+       subscribeLiveBets (toggle, auth refresh) would silently no-op on
+       the dead object — the v20 bug. */
+    if (liveActive) return true;
+    if (Date.now() - liveLastSubscribeAtMs > LIVE_RESUBSCRIBE_ZOMBIE_MS) teardownLiveChannel();
+    else return true;
+  }
   var userId = currentUser.id;
+  liveLastSubscribeAtMs = Date.now();
   liveChannel = sb.channel('live-bets')
     .on('postgres_changes',
       { event: '*', schema: 'public', table: 'live_bets', filter: 'user_id=eq.' + userId },
@@ -1759,22 +1811,130 @@ function subscribeLiveBets() {
         if (payload && payload.new) handleLiveBet(payload.new);
       });
   liveChannel.subscribe(function (status) {
-    liveActive = (status === 'SUBSCRIBED');
+    if (status === 'SUBSCRIBED') {
+      liveActive = true;
+      liveSubscribeFails = 0;
+      liveNextRetryAtMs = 0;
+      setLiveBadge();
+      fetchLatestLiveBet();
+      return;
+    }
+    if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      liveSubscribeFails += 1;
+      liveNextRetryAtMs = Date.now() + liveBackoffMs(liveSubscribeFails);
+      teardownLiveChannel();
+    }
     setLiveBadge();
-    if (liveActive) fetchLatestLiveBet();
   });
-  liveActive = true; // optimistic until the subscribe callback confirms
   setLiveBadge();
+  startLivePoll();
   return true;
 }
 
-function unsubscribeLiveBets() {
+/* Tear the Realtime channel down without touching the poll or the
+   saved toggle: the next poll tick re-subscribes when the backoff
+   allows. No-op without a DOM (Node tests). */
+function teardownLiveChannel() {
   if (liveChannel && sb) {
     try { sb.removeChannel(liveChannel); } catch (e) { /* already gone */ }
   }
   liveChannel = null;
   liveActive = false;
   setLiveBadge();
+}
+
+function unsubscribeLiveBets() {
+  stopLivePoll();
+  liveSubscribeFails = 0;
+  liveNextRetryAtMs = 0;
+  if (liveChannel && sb) {
+    try { sb.removeChannel(liveChannel); } catch (e) { /* already gone */ }
+  }
+  liveChannel = null;
+  liveActive = false;
+  setLiveBadge();
+}
+
+/* ---------------- Live poll fallback + Realtime recovery (lrp-v21) -------- */
+/* Realtime is a convenience, not a guarantee: sockets drop, events get
+   missed, and a tab can sit for hours on a dead channel. So while live
+   mode is on, the app ALSO polls the live_bets row every few seconds
+   and heals its own subscription — a bet can never hide for longer
+   than one poll interval, whatever state the socket is in. */
+var LIVE_POLL_MS = 4000; // REST poll while live is on
+var LIVE_RESUBSCRIBE_ZOMBIE_MS = 15000; // channel open but never confirmed SUBSCRIBED for this long = dead
+var livePollTimer = null;
+var liveFetchInFlight = false; // one live_bets fetch at a time (poll + START + tab-switch overlap)
+var liveFetchFails = 0; // consecutive network failures on the live fetch
+var liveSubscribeFails = 0; // consecutive Realtime subscribe failures
+var liveNextRetryAtMs = 0; // earliest time a failed subscribe may be retried
+var liveLastSubscribeAtMs = 0; // when the current subscribe attempt started
+
+/* Backoff before the next Realtime re-subscribe after a failure:
+   2s, 5s, 10s, 20s, then 30s. Pure — unit-tested. */
+function liveBackoffMs(fails) {
+  if (fails <= 1) return 2000;
+  if (fails === 2) return 5000;
+  if (fails === 3) return 10000;
+  if (fails === 4) return 20000;
+  return 30000;
+}
+
+/* What should the app do about its Realtime subscription right now?
+   Pure — unit-tested. `st` is { channel, active, lastSubscribeAtMs,
+   nextRetryAtMs }; `nowMs` is Date.now().
+     'ok' — subscribed and confirmed, nothing to do
+     'subscribe' — no channel and the retry time has come
+     'wait' — no channel but still in backoff, or channel open but not
+       yet confirmed and still inside the zombie window
+     'teardown-subscribe' — channel open but unconfirmed past the
+       zombie window: tear it down and subscribe fresh */
+function liveSubscriptionAction(st, nowMs) {
+  if (!st.channel) return (typeof nowMs === 'number' && nowMs >= st.nextRetryAtMs) ? 'subscribe' : 'wait';
+  if (st.active) return 'ok';
+  if (typeof nowMs === 'number' && typeof st.lastSubscribeAtMs === 'number' &&
+      nowMs - st.lastSubscribeAtMs > LIVE_RESUBSCRIBE_ZOMBIE_MS) return 'teardown-subscribe';
+  return 'wait';
+}
+
+/* Make sure a live subscription exists (or is retried when its backoff
+   allows). Called on every poll tick, on tab-visible and on reconnect
+   — so a dead channel can never sit unnoticed. Returns the action
+   taken ('ok' | 'subscribe' | 'wait' | 'teardown-subscribe').
+   No-op without a DOM (Node tests). */
+function ensureLiveSubscription(nowMs) {
+  if (typeof document === 'undefined') return 'wait';
+  if (!liveEnabled || !sb || !currentUser) return 'wait';
+  var now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  var action = liveSubscriptionAction({
+    channel: !!liveChannel, active: liveActive,
+    lastSubscribeAtMs: liveLastSubscribeAtMs, nextRetryAtMs: liveNextRetryAtMs
+  }, now);
+  if (action === 'teardown-subscribe') teardownLiveChannel();
+  if (action === 'subscribe' || action === 'teardown-subscribe') subscribeLiveBets();
+  return action;
+}
+
+/* One poll tick: fetch the live row (the Realtime safety net) and heal
+   the subscription if it is down. Skipped while the tab is hidden —
+   the visibility handler re-fetches the moment it shows again.
+   Returns false when skipped, else what fetchLatestLiveBet returned. */
+async function livePollTick() {
+  if (typeof document === 'undefined') return false;
+  if (!liveEnabled || !sb || !currentUser) return false;
+  if (document.hidden) return false;
+  var result = await fetchLatestLiveBet();
+  ensureLiveSubscription(Date.now());
+  return result;
+}
+
+function startLivePoll() {
+  if (typeof document === 'undefined') return;
+  if (livePollTimer) return;
+  livePollTimer = setInterval(function () { livePollTick(); }, LIVE_POLL_MS);
+}
+function stopLivePoll() {
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
 }
 
 /* Toggle handler: persist the choice; subscribing starts live mode,
@@ -3657,9 +3817,24 @@ function init() {
   renderStats();
   renderSpeedTable();
   renderTimer();
+  /* Running version, on screen: a cached old deploy is visible at a
+     glance instead of silent (the user opened his tab right as v20
+     deployed and may still have been on v19). */
+  var verEl = $('appVersion');
+  if (verEl) verEl.textContent = APP_VERSION;
   setLiveBadge();
   updateLiveFreshness();
   setInterval(updateLiveFreshness, 1000); // the freshness age ticks live
+  /* lrp-v21: a tab that sat hidden (or offline) may hold a dead socket
+     — the moment it shows again (or the network returns), heal the
+     subscription and re-fetch, so a live bet is never missed for a
+     stale tab. */
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { ensureLiveSubscription(Date.now()); fetchLatestLiveBet(); }
+  });
+  window.addEventListener('online', function () {
+    ensureLiveSubscription(Date.now()); fetchLatestLiveBet();
+  });
   showWizardStep(wizard.step);
 
   $('timerBtn').addEventListener('click', startTimer);
@@ -3787,7 +3962,6 @@ if (typeof module !== 'undefined' && module.exports) {
     liveTimerSeconds: liveTimerSeconds,
     liveRemainingSeconds: liveRemainingSeconds,
     liveCountdownAt: liveCountdownAt,
-    isManualRunInProgress: isManualRunInProgress,
     LIVE_LATE_SECONDS: LIVE_LATE_SECONDS,
     currentBetKey: currentBetKey,
     decideLiveBet: decideLiveBet,
@@ -3803,6 +3977,15 @@ if (typeof module !== 'undefined' && module.exports) {
     liveFreshnessText: liveFreshnessText,
     liveRowSummary: liveRowSummary,
     formatAgeSeconds: formatAgeSeconds,
+    APP_VERSION: APP_VERSION,
+    LIVE_POLL_MS: LIVE_POLL_MS,
+    LIVE_RESUBSCRIBE_ZOMBIE_MS: LIVE_RESUBSCRIBE_ZOMBIE_MS,
+    liveBackoffMs: liveBackoffMs,
+    liveSubscriptionAction: liveSubscriptionAction,
+    livePollTick: livePollTick,
+    startLivePoll: startLivePoll,
+    stopLivePoll: stopLivePoll,
+    ensureLiveSubscription: ensureLiveSubscription,
     waitForLiveBet: waitForLiveBet,
     notifyLiveWaiters: notifyLiveWaiters,
     rankOfWinner: rankOfWinner,
