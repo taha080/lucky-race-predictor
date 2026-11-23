@@ -109,8 +109,12 @@ function resetPred() {
   check('step 0 (START) is not a manual run in progress',
     app.isManualRunInProgress() === false);
   app.wizard.step = 1;
-  check('step 1 (picking vehicles) IS a manual run in progress',
+  check('step 1 with NO vehicles picked is NOT a manual run in progress (v20: START fall-through leaves step 1 empty)',
+    app.isManualRunInProgress() === false);
+  app.pred.vehicles = ['ORV'];
+  check('step 1 with a vehicle picked IS a manual run in progress',
     app.isManualRunInProgress() === true);
+  app.pred.vehicles = [];
   app.wizard.step = 2;
   check('step 2 (pinning the track) IS a manual run in progress',
     app.isManualRunInProgress() === true);
