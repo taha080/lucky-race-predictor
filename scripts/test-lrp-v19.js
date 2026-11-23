@@ -202,7 +202,7 @@ check('(m) vehicles names the unreadable bet', app.liveBetStatusText('vehicles')
 check('(m) signed-out asks to sign in', app.liveBetStatusText('signed-out').indexOf('Sign in') !== -1);
 check('(m) error names the connection', app.liveBetStatusText('error').indexOf('connection') !== -1);
 check('(m) fresh falls back to waiting', app.liveBetStatusText('fresh').indexOf('waiting') !== -1);
-check('(m) START wait window is 5s', app.LIVE_START_WAIT_MS === 5000);
+check('(m) START wait window is 10s (v20: raised from 5s so a live bet pushed 6-10s after START still runs)', app.LIVE_START_WAIT_MS === 10000);
 
 // --- (n) async: liveBetStatus (no Supabase in Node) + the waiter ---
 var asyncChecks = [];

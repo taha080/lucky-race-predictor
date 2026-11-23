@@ -1315,13 +1315,21 @@ function currentBetKey() {
   return '';
 }
 
-/* True while the user is mid-wizard on a manual run: step 1 (picking
-   the 3 vehicles) or step 2 (pinning the track). Step 0 is the START
-   screen (nothing to lose) and step 3 is a finished run — a live bet
-   for the NEXT race is meant to replace that result, so it is not
-   "in progress". Reads the wizard global — unit-tested via app.wizard. */
+/* True while the user is mid-wizard on a manual run: step 2 (pinning
+   the track — the 3 vehicles are already picked) or step 1 once at
+   least one vehicle is picked. Step 1 with nothing picked yet is NOT
+   a run in progress: START drops the user here when no live bet was
+   waiting, and a live bet arriving a moment later loses nothing by
+   taking over — with the old unconditional step-1 guard it was
+   thrown away as 'manual-busy' even though the user had not tapped
+   anything. Step 0 is the START screen (nothing to lose) and step 3
+   is a finished run — a live bet for the NEXT race is meant to
+   replace that result, so it is not "in progress". Reads the wizard
+   and pred globals — unit-tested via app.wizard / app.pred. */
 function isManualRunInProgress() {
-  return wizard.step === 1 || wizard.step === 2;
+  if (wizard.step === 2) return true;
+  if (wizard.step === 1) return pred.vehicles.length > 0;
+  return false;
 }
 
 /* Decide what to do with one live-bet row. `accessOk` is appAccess().ok;
@@ -1417,6 +1425,81 @@ function setLiveBadge() {
   }
   var toggle = $('liveToggle');
   if (toggle) toggle.checked = liveEnabled;
+  updateLiveFreshness();
+}
+
+/* Live-bet freshness indicator (lrp-v20): when the last live bet was
+   received, so the user can SEE on screen whether live data is
+   arriving or late. liveLastRowAtMs is the updated_at of the last
+   live_bets row the app saw (Realtime event or START/subscribe
+   fetch) — the honest freshness signal: a row the Reader wrote
+   10 hours ago stays 10 hours old no matter how often the app
+   re-fetches it. The text ticks every second (see init). */
+var liveLastRowAtMs = null;
+var liveLastRowSummary = '';
+
+/* One-line summary of a live_bets row: vehicles + the one known
+   track, e.g. 'SUV/ATV/Sports Car · Dirt'. Pure — unit-tested. */
+function liveRowSummary(row) {
+  if (!row || !Array.isArray(row.vehicles) || !row.vehicles.length) return '';
+  var names = row.vehicles.map(function (v) { return resolveVehicleName(v); });
+  var known = '';
+  if (Array.isArray(row.tracks)) {
+    for (var i = 0; i < row.tracks.length; i++) {
+      var t = resolveTrackName(row.tracks[i]);
+      if (t && t !== UNKNOWN_TRACK) { known = t; break; }
+    }
+  }
+  return names.join('/') + (known ? ' · ' + known : '');
+}
+
+/* Age of a timestamp in whole seconds, formatted for a phone screen:
+   '45s', '2m', '10h 23m'. Pure — unit-tested. */
+function formatAgeSeconds(ageSeconds) {
+  var age = Math.max(0, Math.floor(ageSeconds));
+  if (age < 60) return age + 's';
+  if (age < 3600) return Math.floor(age / 60) + 'm';
+  return Math.floor(age / 3600) + 'h ' + Math.floor((age % 3600) / 60) + 'm';
+}
+
+/* Text for the freshness line. Pure — unit-tested.
+   - no row ever seen: 'No live bet yet — check the Reader is ON.'
+   - row fresh (age <= 60 s): 'Last live bet 12:36:33 · 45s ago · SUV/ATV/Sports Car · Dirt'
+   - row stale (age > 60 s): 'Last live bet 02:17:07 · 10h 23m ago — Reader isn't sending bets. Check the Reader is ON.' */
+function liveFreshnessText(rowAtMs, summary, nowMs) {
+  var now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  if (typeof rowAtMs !== 'number' || isNaN(rowAtMs)) return 'No live bet yet — check the Reader is ON.';
+  var age = Math.max(0, Math.floor((now - rowAtMs) / 1000));
+  var d = new Date(rowAtMs);
+  var hh = ('0' + d.getHours()).slice(-2);
+  var mm = ('0' + d.getMinutes()).slice(-2);
+  var ss = ('0' + d.getSeconds()).slice(-2);
+  var base = 'Last live bet ' + hh + ':' + mm + ':' + ss + ' · ' + formatAgeSeconds(age) + ' ago' +
+    (summary ? ' · ' + summary : '');
+  if (age > LIVE_STALE_MS / 1000) return base + " — Reader isn't sending bets. Check the Reader is ON.";
+  return base;
+}
+
+/* Write the freshness line (DOM). No-op without a DOM (Node tests).
+   Warn styling when no bet has ever arrived or the last one is
+   older than LIVE_STALE_MS. */
+function updateLiveFreshness() {
+  if (typeof document === 'undefined') return;
+  var el = $('liveFreshness');
+  if (!el) return;
+  el.textContent = liveFreshnessText(liveLastRowAtMs, liveLastRowSummary);
+  var stale = liveLastRowAtMs === null || (Date.now() - liveLastRowAtMs > LIVE_STALE_MS);
+  el.classList.toggle('warn', stale);
+}
+
+/* Remember the last live_bets row the app saw, for the freshness
+   line. Called for every row arrival (Realtime event or fetch). */
+function recordLiveBetSeen(row) {
+  if (!row || typeof row !== 'object') return;
+  var ts = liveRowUpdatedAtMs(row);
+  if (ts !== null) liveLastRowAtMs = ts;
+  liveLastRowSummary = liveRowSummary(row);
+  updateLiveFreshness();
 }
 
 /* Synced countdown from the Reader's timer_seconds. Reuses the same
@@ -1527,6 +1610,7 @@ function handleLiveBetInner(row) {
    (see waitForLiveBet). Returns what the inner handler returned
    ('ran' | 'shown' | false). */
 function handleLiveBet(row) {
+  recordLiveBetSeen(row);
   var result = handleLiveBetInner(row);
   if (result === 'ran' || result === 'shown') notifyLiveWaiters(result);
   return result;
@@ -1556,9 +1640,13 @@ function startLiveDecision(liveOn, signedIn, accessOk, fetchResult) {
 }
 
 /* How long START waits for a live bet to arrive before going manual
-   (lrp-v19). Covers a bet landing a second after START is pressed and
-   a Realtime subscription that was slow to wake. */
-var LIVE_START_WAIT_MS = 5000;
+   (lrp-v19: 5 s; lrp-v20: 10 s). The Reader needs a few seconds to
+   spot the bet screen stably and push it — a push landing 6–10 s
+   after START is still 25+ s inside the 35 s betting window, so
+   waiting 10 s still leaves plenty of time to bet. With 5 s, a slow
+   push arrived after START had already dropped to manual picking,
+   and the manual-busy guard then threw the bet away. */
+var LIVE_START_WAIT_MS = 10000;
 
 /* Waiters for a live bet: START registers here while it waits, and
    handleLiveBet wakes them when a bet actually runs (or is shown).
@@ -3570,6 +3658,8 @@ function init() {
   renderSpeedTable();
   renderTimer();
   setLiveBadge();
+  updateLiveFreshness();
+  setInterval(updateLiveFreshness, 1000); // the freshness age ticks live
   showWizardStep(wizard.step);
 
   $('timerBtn').addEventListener('click', startTimer);
@@ -3710,6 +3800,9 @@ if (typeof module !== 'undefined' && module.exports) {
     LIVE_START_WAIT_MS: LIVE_START_WAIT_MS,
     liveBetStatus: liveBetStatus,
     liveBetStatusText: liveBetStatusText,
+    liveFreshnessText: liveFreshnessText,
+    liveRowSummary: liveRowSummary,
+    formatAgeSeconds: formatAgeSeconds,
     waitForLiveBet: waitForLiveBet,
     notifyLiveWaiters: notifyLiveWaiters,
     rankOfWinner: rankOfWinner,
