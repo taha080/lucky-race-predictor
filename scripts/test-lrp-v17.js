@@ -9,6 +9,13 @@
 //   (c) a live bet never clobbers a manual run in progress (wizard
 //       steps 1–2) — decideLiveBet ignores it as 'manual-busy' and the
 //       caller shows a small notice instead.
+//       REMOVED in lrp-v21 (23 Nov 2026): that guard is what dropped
+//       live bets the user was waiting for — START fell through to
+//       step 1, the user started picking, the bet arrived and was
+//       thrown away. A live bet now ALWAYS wins over an unfinished
+//       manual pick; the (c) checks below assert the new behaviour.
+//       The manual-busy branch and isManualRunInProgress are deleted;
+//       see scripts/test-lrp-v21.js for the full v21 coverage.
 // These tests cover the PURE logic only (no DOM, no Supabase). The
 // Realtime subscription, the DOM auto-drive (handleLiveBet) and the
 // visible LATE note are wiring — verified by hand in the browser.
@@ -55,7 +62,6 @@ function resetPred() {
 (function main() {
   check('v17 live helpers exported',
     typeof app.liveRemainingSeconds === 'function' &&
-    typeof app.isManualRunInProgress === 'function' &&
     app.LIVE_LATE_SECONDS === 10);
 
   // --- (a) liveRemainingSeconds: age-adjusted countdown ---
@@ -104,37 +110,38 @@ function resetPred() {
   check('no timer at all: runs, not late (nothing to be late against)',
     noTimer.action === 'run' && noTimer.late === false && noTimer.remainingSeconds === null);
 
-  // --- (c) manual-run guard ---
-  app.wizard.step = 0;
-  check('step 0 (START) is not a manual run in progress',
-    app.isManualRunInProgress() === false);
+  // --- (c) lrp-v21: the manual-busy drop is GONE. A live bet always
+  // wins over an unfinished manual pick (steps 1–2, no run yet) —
+  // the pick is for the same race and is at most 4 taps, while
+  // dropping the bet is the failure the user reported. ---
+  resetPred();
   app.wizard.step = 1;
-  check('step 1 with NO vehicles picked is NOT a manual run in progress (v20: START fall-through leaves step 1 empty)',
-    app.isManualRunInProgress() === false);
-  app.pred.vehicles = ['ORV'];
-  check('step 1 with a vehicle picked IS a manual run in progress',
-    app.isManualRunInProgress() === true);
-  app.pred.vehicles = [];
-  app.wizard.step = 2;
-  check('step 2 (pinning the track) IS a manual run in progress',
-    app.isManualRunInProgress() === true);
-  app.wizard.step = 3;
-  check('step 3 (result shown) is not a manual run in progress',
-    app.isManualRunInProgress() === false);
+  app.pred.vehicles = ['ORV']; // mid-pick: 1 vehicle chosen, no run yet
+  check('live bet RUNS while wizard is mid-pick on step 1 (v21: no manual-busy drop)',
+    app.decideLiveBet(freshRow(), true, NOW, '').action === 'run');
   resetPred();
-  check('decideLiveBet ignores a live bet while a manual run is in progress',
-    (function () {
-      var d = app.decideLiveBet(freshRow(), true, NOW, '', true);
-      return d.action === 'ignore' && d.reason === 'manual-busy';
-    })());
+  app.wizard.step = 2; // pinning the track, no run yet
+  app.pred.vehicles = ['ORV', 'SUV', 'Monster Truck'];
+  check('live bet RUNS while wizard is on step 2 pinning (v21: no manual-busy drop)',
+    app.decideLiveBet(freshRow(), true, NOW, '').action === 'run');
   resetPred();
-  check('same bet runs once the manual run is done (manualBusy false)',
-    app.decideLiveBet(freshRow(), true, NOW, '', false).action === 'run');
-  check('premium gate still wins over the manual-busy guard',
-    app.decideLiveBet(freshRow(), false, NOW, '', true).action === 'premium');
-  check('a stale row is still reported stale, not manual-busy',
+  check('premium gate still wins (access denied -> premium, not run)',
+    app.decideLiveBet(freshRow(), false, NOW, '').action === 'premium');
+  check('a stale row is still reported stale',
     app.decideLiveBet(
-      freshRow({ updated_at: new Date(NOW - 61000).toISOString() }), true, NOW, '', true).reason === 'stale');
+      freshRow({ updated_at: new Date(NOW - 61000).toISOString() }), true, NOW, '').reason === 'stale');
+  resetPred();
+  // ...but a MANUAL RUN of the same line-up still stays ignored
+  // ('already-shown'): the user already has this exact prediction on
+  // screen, so re-running it would be pointless churn. That dedup is
+  // NOT the manual-busy guard — it stays.
+  app.wizard.ran = true;
+  app.wizard.lastRun = { vehicles: ['ORV', 'SUV', 'Monster Truck'], tracks: ['unknown', 'Dirt', 'unknown'] };
+  check('manual RUN of the same line-up stays already-shown (dedup, not manual-busy)',
+    (function () {
+      var d = app.decideLiveBet(freshRow(), true, NOW, '');
+      return d.action === 'ignore' && d.reason === 'already-shown';
+    })());
   resetPred();
 
   // --- (d) consecutive identical bets: dedup must NOT swallow the 2nd ---

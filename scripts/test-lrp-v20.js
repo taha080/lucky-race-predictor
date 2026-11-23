@@ -11,6 +11,10 @@
 //       when at least one vehicle is picked — START's fall-through
 //       leaves step 1 empty, so a late live bet is no longer dropped
 //       as 'manual-busy' while 20+ s remain on the 35s timer.
+//       SUPERSEDED in lrp-v21 (23 Nov 2026): the whole manual-busy
+//       drop is deleted — a live bet now ALWAYS wins over an
+//       unfinished manual pick. The (c) checks below assert the v21
+//       behaviour; see scripts/test-lrp-v21.js for the full coverage.
 //   (d) INVERSION REGRESSION (user report 23 Nov 12:46 PKT): Desert
 //       shown, Motorcycle / Stock Car / SUV — the user said the
 //       Predictor shows ATV HIGH, Motorcycle MID, Stock Car JACKPOT
@@ -132,20 +136,21 @@ seedRows = deduped;
     app.liveFreshnessText(NOW - 37380000, 'SUV/ATV/Sports Car · Dirt', NOW).indexOf('10h 23m ago') !== -1 &&
     app.liveFreshnessText(NOW - 37380000, 'SUV/ATV/Sports Car · Dirt', NOW).indexOf("isn't sending") !== -1);
 
-  // --- (c) isManualRunInProgress refinement ---
+  // --- (c) lrp-v21: the manual-busy guard is DELETED. A live bet
+  // always wins over an unfinished manual pick — isManualRunInProgress
+  // no longer exists, and decideLiveBet takes no manual-busy flag. ---
+  check('isManualRunInProgress is gone in v21 (manual-busy drop deleted)',
+    typeof app.isManualRunInProgress === 'undefined');
   resetState();
-  app.wizard.step = 0;
-  check('step 0 is not a manual run', app.isManualRunInProgress() === false);
   app.wizard.step = 1;
-  check('step 1 with no picks is NOT a manual run (v20 fix)',
-    app.isManualRunInProgress() === false);
-  app.pred.vehicles = ['ORV'];
-  check('step 1 with a pick IS a manual run', app.isManualRunInProgress() === true);
-  app.pred.vehicles = [];
-  app.wizard.step = 2;
-  check('step 2 is always a manual run', app.isManualRunInProgress() === true);
-  app.wizard.step = 3;
-  check('step 3 is not a manual run', app.isManualRunInProgress() === false);
+  app.pred.vehicles = ['ORV']; // mid-pick on step 1
+  check('step 1 with a pick: live bet RUNS (v21)',
+    app.decideLiveBet(freshRow(), true, NOW, '').action === 'run');
+  resetState();
+  app.wizard.step = 2; // pinning, no run yet
+  app.pred.vehicles = ['ORV', 'SUV', 'Monster Truck'];
+  check('step 2: live bet RUNS (v21)',
+    app.decideLiveBet(freshRow(), true, NOW, '').action === 'run');
   resetState();
 
   // --- (b)+(c) decideLiveBet regression: START fall-through + late bet runs ---
@@ -155,10 +160,9 @@ seedRows = deduped;
   resetState();
   app.wizard.step = 1; // exactly where START's fall-through lands
   var lateRow = freshRow({ timer_seconds: 27, updated_at: new Date(NOW - 8000).toISOString() });
-  var busy = app.isManualRunInProgress();
-  var d = app.decideLiveBet(lateRow, true, NOW, '', busy);
+  var d = app.decideLiveBet(lateRow, true, NOW, '');
   check('late bet after START fall-through runs (not manual-busy)',
-    busy === false && d.action === 'run');
+    d.action === 'run');
   resetState();
 
   // --- (d) INVERSION REGRESSION: Desert, Motorcycle / Stock Car / SUV ---
@@ -181,7 +185,7 @@ seedRows = deduped;
       created_at: new Date(NOW - 5000).toISOString()
     };
     resetState();
-    var dec = app.decideLiveBet(row, true, NOW, '', false);
+    var dec = app.decideLiveBet(row, true, NOW, '');
     if (dec.action !== 'run') return null;
     var ap = app.applyLiveBet(row, NOW);
     if (!ap.ok) return null;
