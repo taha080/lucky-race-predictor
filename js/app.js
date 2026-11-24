@@ -52,6 +52,17 @@
      always wins over an unfinished manual pick (steps 1–2 with no run
      yet) instead of being dropped as 'manual-busy'. Pure helpers are
      unit-tested in scripts/test-lrp-v21.js.
+   - SPEEDS + FULL-HISTORY BLEND (lrp-v22 — the user's order, 24 Nov
+     2026, reversing the v19 data-only order): the ranking blends the
+     game's own speed table (DEFAULT_SPEEDS, canonical — never a user's
+     localStorage edits) for the shown track with the full saved history,
+     first bet to last, via the v19 hierarchical back-off, now with the
+     recency decay (halves every 50 races) weighting the history counts.
+     Speed weight V22_SPEED_WEIGHT (default 0.6), chosen by replay on
+     the 346 local races — see scripts/replay-blend-v22.js. The
+     confidence guard is applied again in computePrediction (it was
+     dropped from the ranking path in v19). Pure helpers are unit-tested
+     in scripts/test-lrp-v22.js.
    ========================================================================== */
 
 'use strict';
@@ -59,7 +70,7 @@
 /* Running version, shown on screen (header badge) so the user can see
    at a glance which deploy he is on — a cached old version is visible
    instead of silent. Bump on every deploy. */
-var APP_VERSION = 'v21';
+var APP_VERSION = 'v22';
 
 /* ---------------- Static game data (from the game screenshots) ------------ */
 
@@ -564,7 +575,11 @@ function applyConfidenceGuard(final, unknownCount) {
    win share is Laplace-smoothed toward the next level's share
    (DATA_ONLY_ALPHA = 2 pseudo-races) so a small sample can never show
    100% or 0% — the % stays traceable to the data. Plain counts, no
-   recency decay: every saved race counts the same. Shares are clamped
+   recency decay: with opts.decay the win counts are decay-weighted
+   (newest race weight 1.0, halving every HISTORY_HALF_LIFE_RACES races)
+   so recent races count more while every race — first bet to last —
+   still contributes; without it, plain counts: every saved race counts
+   the same. Shares are clamped
    to [1%, 99%] and renormalised so the three sum to exactly 1.
    Returns { ranked: [{vehicle, prob, wins}], dataInfo } where dataInfo
    is { level, levelLabel, matches, counts, shares, overallWins,
@@ -576,6 +591,18 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
   var minMatches = (opts && typeof opts.minMatches === 'number') ? opts.minMatches : DATA_ONLY_MIN_MATCHES;
   var alpha = (opts && typeof opts.alpha === 'number') ? opts.alpha : DATA_ONLY_ALPHA;
   var races = raceList || [];
+  // lrp-v22: opts.decay weights the win counts by recency — the weight
+  // of a race is decayWeight(age, halfLife) with age = its index in the
+  // newest-first list (0 = newest race, weight 1.0). The weight never
+  // reaches 0, so the first bet still counts; decay only weights. Off
+  // by default, so the v19 plain-counts behaviour is unchanged.
+  var useDecay = !!(opts && opts.decay);
+  var halfLife = historyHalfLife();
+  function raceWeight(r) {
+    if (!useDecay) return 1;
+    var i = races.indexOf(r);
+    return i < 0 ? 1 : decayWeight(i, halfLife);
+  }
   var setKey = vehicles.slice().sort().join('|');
   function setOf(r) {
     return r && Array.isArray(r.vehicles) && r.vehicles.length === 3
@@ -586,13 +613,16 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
   }
   var l1 = [], l2 = [], l3 = [];
   var overallWins = {}, overallApp = {};
-  vehicles.forEach(function (v) { overallWins[v] = 0; overallApp[v] = 0; });
+  var overallWinsW = {}, overallAppW = {};
+  vehicles.forEach(function (v) { overallWins[v] = 0; overallApp[v] = 0; overallWinsW[v] = 0; overallAppW[v] = 0; });
   races.forEach(function (r) {
     if (!r || !Array.isArray(r.vehicles)) return;
+    var wgt = raceWeight(r);
     vehicles.forEach(function (v) {
       if (r.vehicles.indexOf(v) !== -1) {
         overallApp[v] += 1;
-        if (r.winner === v) overallWins[v] += 1;
+        overallAppW[v] += wgt;
+        if (r.winner === v) { overallWins[v] += 1; overallWinsW[v] += wgt; }
       }
     });
     if (setOf(r) !== setKey) return;
@@ -601,11 +631,14 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
     if (knownSeg !== null && knownSeg !== undefined && knownTrack &&
         Array.isArray(r.tracks) && r.tracks[knownSeg] === knownTrack) l1.push(r);
   });
-  function winsOf(list) {
+  function winsOf(list, weighted) {
     var c = {};
     vehicles.forEach(function (v) { c[v] = 0; });
-    list.forEach(function (r) { if (c[r.winner] !== undefined) c[r.winner] += 1; });
+    list.forEach(function (r) { if (c[r.winner] !== undefined) c[r.winner] += weighted ? raceWeight(r) : 1; });
     return c;
+  }
+  function totalOf(counts) {
+    return vehicles.reduce(function (s, v) { return s + (counts[v] || 0); }, 0);
   }
   function normalize(shares) {
     var total = vehicles.reduce(function (s, v) { return s + (shares[v] || 0); }, 0);
@@ -614,9 +647,11 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
     return out;
   }
   // L4 — overall win rates, smoothed toward uniform 1/3, then shares.
+  // With decay on, the rates come from the decay-weighted wins and
+  // appearances (identical to the plain counts when decay is off).
   var rate4 = {};
   vehicles.forEach(function (v) {
-    rate4[v] = (overallWins[v] + alpha / vehicles.length) / (overallApp[v] + alpha);
+    rate4[v] = (overallWinsW[v] + alpha / vehicles.length) / (overallAppW[v] + alpha);
   });
   var share4 = normalize(rate4);
   function smooth(counts, n, prior) {
@@ -626,10 +661,14 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
     });
     return normalize(s);
   }
-  var counts3 = winsOf(l3), share3 = smooth(counts3, l3.length, share4);
-  var counts2 = winsOf(l2), share2 = knownTrack ? smooth(counts2, l2.length, share3) : share3;
-  var counts1 = winsOf(l1), share1 = (knownSeg !== null && knownSeg !== undefined && knownTrack)
-    ? smooth(counts1, l1.length, share2) : share2;
+  // counts* are RAW win counts (shown in the UI as "Won X of N races");
+  // wcounts* are the decay-weighted counts that drive the shares.
+  var counts3 = winsOf(l3), counts2 = winsOf(l2), counts1 = winsOf(l1);
+  var wcounts3 = winsOf(l3, true), wcounts2 = winsOf(l2, true), wcounts1 = winsOf(l1, true);
+  var share3 = smooth(wcounts3, totalOf(wcounts3), share4);
+  var share2 = knownTrack ? smooth(wcounts2, totalOf(wcounts2), share3) : share3;
+  var share1 = (knownSeg !== null && knownSeg !== undefined && knownTrack)
+    ? smooth(wcounts1, totalOf(wcounts1), share2) : share2;
   var level = 4, levelLabel = 'overall win rates', matches = races.length, counts = overallWins, shares = share4;
   if (l3.length >= minMatches) { level = 3; levelLabel = 'same cars'; matches = l3.length; counts = counts3; shares = share3; }
   if (knownTrack && l2.length >= minMatches) { level = 2; levelLabel = 'same cars + ' + knownTrack + ' anywhere'; matches = l2.length; counts = counts2; shares = share2; }
@@ -656,6 +695,105 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
   };
 }
 
+/* lrp-v22 — SPEEDS + FULL-HISTORY BLEND.
+   The user's order (24 Nov 2026): use the game's own speeds AND the
+   full saved history — first bet to last — to predict. This replaces
+   the v19 data-only ranking.
+   - Speed share: the canonical DEFAULT_SPEEDS table (the game's own
+     speeds per track), NEVER a user's localStorage edits — those are
+     per-user, local-only, and the app's speed table is user-editable,
+     so they cannot be the shared ranking. For the pinned track, the
+     share is each vehicle's speed on that track over the three speeds.
+     With no track pinned, each vehicle's EXPECTED speed is the plain
+     mean of its per-track speeds (no track is more likely than another
+     before the bet shows one).
+   - History share: dataOnlyRank with the recency decay ON (halves
+     every 50 races — every race still counts, recent ones count more).
+   - Blend: final = V22_SPEED_WEIGHT * speed + (1 - V22_SPEED_WEIGHT)
+     * history. The weight is 0.6 (speed-primary): on the 346 local
+     races the replay at 0.5 let thin history overrule the speed table
+     in the user's own Desert example (Stock Car is fastest on Desert
+     per the table, yet SUV had the only Desert wins) — 0.6 is the
+     lowest weight that puts Stock Car first there, while 0.7 gave up
+     too much of the history signal. See scripts/replay-blend-v22.js.
+   - The blended ranking carries the dataOnlyRank wins and level so
+     the UI reason ("Won X of N races") and the feedback counters keep
+     working, and the confidence guard is applied in computePrediction
+     after the blend (it was dropped from the ranking path in v19). */
+var V22_SPEED_WEIGHT = 0.6;
+
+function speedShares(vehicles, knownSeg, knownTrack) {
+  var speeds = {};
+  vehicles.forEach(function (v) {
+    var t = DEFAULT_SPEEDS[v] || {};
+    if (knownTrack && typeof t[knownTrack] === 'number') {
+      speeds[v] = t[knownTrack];
+    } else {
+      // No track pinned: expected speed is the plain mean of the
+      // vehicle's per-track speeds — before the bet shows a track,
+      // no track is more likely than another.
+      var sum = 0, n = 0;
+      TRACKS.forEach(function (tr) {
+        if (typeof t[tr] === 'number') { sum += t[tr]; n += 1; }
+      });
+      speeds[v] = n > 0 ? sum / n : 0;
+    }
+  });
+  var sum = vehicles.reduce(function (s, v) { return s + speeds[v]; }, 0);
+  var shares = {};
+  vehicles.forEach(function (v) { shares[v] = sum > 0 ? speeds[v] / sum : 1 / vehicles.length; });
+  return { shares: shares, speeds: speeds };
+}
+
+function blendedRank(vehicles, knownSeg, knownTrack, raceList, opts) {
+  var w = (opts && typeof opts.speedWeight === 'number') ? opts.speedWeight : V22_SPEED_WEIGHT;
+  if (w < 0) w = 0;
+  if (w > 1) w = 1;
+  var data = dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, { decay: true });
+  var speed = speedShares(vehicles, knownSeg, knownTrack);
+  var blended = {};
+  vehicles.forEach(function (v) {
+    blended[v] = w * speed.shares[v] + (1 - w) * data.dataInfo.shares[v];
+  });
+  var total = vehicles.reduce(function (s, v) { return s + blended[v]; }, 0);
+  if (total > 0) vehicles.forEach(function (v) { blended[v] = blended[v] / total; });
+  var dataByVehicle = {};
+  data.ranked.forEach(function (r) { dataByVehicle[r.vehicle] = r; });
+  var ranked = vehicles.map(function (v, i) {
+    return { vehicle: v, prob: blended[v], wins: (dataByVehicle[v] && dataByVehicle[v].wins) || 0, index: i };
+  }).sort(function (a, b) {
+    if (b.prob !== a.prob) return b.prob - a.prob;
+    // Tie-break: the data share, then input order (same as dataOnlyRank).
+    var da = data.dataInfo.shares[a.vehicle], db = data.dataInfo.shares[b.vehicle];
+    if (db !== da) return db - da;
+    return a.index - b.index;
+  }).map(function (r) { return { vehicle: r.vehicle, prob: r.prob, wins: r.wins }; });
+  return {
+    ranked: ranked,
+    dataInfo: data.dataInfo,
+    blendInfo: {
+      speedWeight: w, speedShares: speed.shares, speeds: speed.speeds,
+      historyShares: data.dataInfo.shares
+    }
+  };
+}
+
+/* Short human reason for a blended pick: the speed table AND the saved
+   races, in one line. blendInfo is the blendedRank result info. */
+function buildBlendReason(vehicle, dataInfo, blendInfo) {
+  if (!blendInfo || !dataInfo) return 'Ranked from speeds and the saved races.';
+  var w = (dataInfo.counts && dataInfo.counts[vehicle]) || 0;
+  var m = dataInfo.matches || 0;
+  var lvl = dataInfo.level;
+  var speedPct = Math.round((blendInfo.speedShares[vehicle] || 0) * 100);
+  var histPct = Math.round((blendInfo.historyShares[vehicle] || 0) * 100);
+  var base;
+  if (lvl === 1) base = 'Won ' + w + ' of ' + m + ' same cars + ' + dataInfo.levelLabel.replace('same cars + ', '') + ' races';
+  else if (lvl === 2 || lvl === 3) base = 'Won ' + w + ' of ' + m + ' ' + dataInfo.levelLabel + ' races';
+  else base = 'Overall win rate ' + Math.round((dataInfo.overallRates[vehicle] || 0) * 100) + '% across ' + (dataInfo.overallAppearances[vehicle] || 0) + ' races';
+  return base + ' — speeds ' + speedPct + '%, history ' + histPct + '%.';
+}
+
 /* Short human reason for a data-only pick: what the saved races say.
    dataInfo is the dataOnlyRank result info. */
 function buildDataReason(vehicle, dataInfo) {
@@ -673,26 +811,43 @@ function buildDataReason(vehicle, dataInfo) {
   return 'No wins in ' + n + ' ' + dataInfo.levelLabel + ' races — ranked on overall win rate';
 }
 
-/* Core prediction. Returns { ranked: [{vehicle, prob, wins}], dist1, dist2, dist3, histInfo: null, oddsInfo: null, dataInfo }.
-   lrp-v19: ranking is DATA-ONLY — see dataOnlyRank. dist1/2/3 are the
-   empirical per-segment track distributions (kept for the return shape);
-   they do NOT influence the ranking. */
+/* Core prediction. Returns { ranked: [{vehicle, prob, wins}], dist1, dist2, dist3, histInfo: null, oddsInfo: null, dataInfo, blendInfo }.
+   lrp-v22: ranking is the SPEEDS + FULL-HISTORY BLEND — see blendedRank.
+   dist1/2/3 are the empirical per-segment track distributions (kept for
+   the return shape); they do NOT influence the ranking. The confidence
+   guard is applied to the blended ranking AFTER the blend: with any
+   track unknown it shrinks each % toward 1/3, so an unknown track can
+   never show over 90% (or under 5%) — the guard was dropped from the
+   ranking path in v19 and is restored here. */
 function computePrediction(input) {
   var vehicles = input.vehicles;
   var raceList = input.races || [];
-  // lrp-v19: ranking is DATA-ONLY (the user's order). Speeds, segment
-  // lengths and odds are NOT used for the ranking any more — the % for
-  // each vehicle comes only from the saved races, via dataOnlyRank.
-  // input.speeds / input.odds are accepted (old callers still pass
-  // them) and ignored.
+  // lrp-v22: ranking blends the canonical DEFAULT_SPEEDS table with the
+  // full saved history (first bet to last, decay-weighted). input.speeds
+  // (a user's localStorage edits) is accepted and IGNORED — the shared
+  // ranking must come from the game's own speed table, not one phone's
+  // edits. input.odds is accepted and ignored — odds stay in Log only.
   var hints = oneTrackHints([input.seg1Hint, input.seg2Hint, input.seg3Hint]);
   var knownSegs = pinnedSegments(hints);
   var knownKeys = Object.keys(knownSegs);
   var knownSeg = knownKeys.length ? parseInt(knownKeys[0], 10) : null;
   var knownTrack = knownSeg !== null ? knownSegs[knownSeg] : null;
   var dists = hints.map(function (h, i) { return segmentDistribution(i, knownSegs, h, raceList); });
-  var res = dataOnlyRank(vehicles, knownSeg, knownTrack, raceList);
-  return { ranked: res.ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: null, oddsInfo: null, dataInfo: res.dataInfo };
+  var res = blendedRank(vehicles, knownSeg, knownTrack, raceList, { speedWeight: input.speedWeight });
+  // Confidence guard, restored in v22 (it was dropped from the ranking
+  // path in v19): unknownCount = segments not pinned (3 minus the one
+  // pinned segment, or 3 with no pin). The guard mutates a
+  // {vehicle: prob} map in place, so build the map, guard it, then map
+  // back to the ranked array and re-sort (the guard is monotonic, so
+  // the order only changes on an exact tie at the cap).
+  var guardMap = {};
+  res.ranked.forEach(function (r) { guardMap[r.vehicle] = r.prob; });
+  var unknownCount = hints.filter(function (h) { return !(h && h.mode === 'pin' && h.track); }).length;
+  applyConfidenceGuard(guardMap, unknownCount);
+  var ranked = res.ranked.map(function (r) {
+    return { vehicle: r.vehicle, prob: guardMap[r.vehicle], wins: r.wins };
+  }).sort(function (a, b) { return b.prob - a.prob; });
+  return { ranked: ranked, dist1: dists[0], dist2: dists[1], dist3: dists[2], histInfo: null, oddsInfo: null, dataInfo: res.dataInfo, blendInfo: res.blendInfo };
 }
 /* Short human reason for a pick, given the distributions used.
    knownSegs = { segmentIndex: track } for pinned segments.
@@ -2716,7 +2871,7 @@ function renderPrediction() {
   panel.innerHTML = html;
 
   line.textContent = result.dataInfo
-    ? 'Data-only pick — ' + result.dataInfo.levelLabel + ' · ' + result.dataInfo.matches + ' matching races. No speeds, no odds, no guesses — the % comes from the saved races.'
+    ? buildBlendReason(result.ranked[0].vehicle, result.dataInfo, result.blendInfo) + ' No odds — the % blends the speed table with the saved races.'
     : 'Assumed tracks — Seg 1: ' + formatDist(result.dist1) +
       ' · Seg 2: ' + formatDist(result.dist2) +
       ' · Seg 3: ' + formatDist(result.dist3) +
@@ -3934,6 +4089,10 @@ if (typeof module !== 'undefined' && module.exports) {
     DATA_ONLY_MIN_MATCHES: DATA_ONLY_MIN_MATCHES,
     DATA_ONLY_ALPHA: DATA_ONLY_ALPHA,
     buildDataReason: buildDataReason,
+    blendedRank: blendedRank,
+    speedShares: speedShares,
+    buildBlendReason: buildBlendReason,
+    V22_SPEED_WEIGHT: V22_SPEED_WEIGHT,
     applyConfidenceGuard: applyConfidenceGuard,
     segmentDistribution: segmentDistribution,
     historicalFreq: historicalFreq,
