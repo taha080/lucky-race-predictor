@@ -269,7 +269,7 @@ unlocks the app without a reload and an expiry locks it again.
 5. Create your account in the app (Account tab → Create account), then in
    the SQL Editor run:
    ```sql
-   update public.profiles set is_admin = true where email = you@example.com;
+   update public.profiles set is_admin = true where email = 'you@example.com';
    ```
 
 ### 2. GitHub Pages deployment
@@ -314,7 +314,7 @@ node test-predict.js   # sample round (see below)
 
 `test-predict.js` (not shipped — run ad hoc):
 ```js
-const m = require(./js/app.js);
+const m = require('./js/app.js');
 const r = m.computePrediction({
   vehicles: ['ORV', 'SUV', 'Monster Truck'],
   seg1Hint: { mode: 'pin', track: 'Desert' },
