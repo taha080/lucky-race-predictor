@@ -58,7 +58,8 @@ check('(a) probs sum to 1', approx(sumProbs(caseA), 1, 1e-6));
 check('(a) no vehicle displays above 99% (was 99% before)', Math.round(maxProb(caseA) * 100) <= 99);
 check('(a) no vehicle displays below 1% (was 0% before)', Math.round(minProb(caseA) * 100) >= 1);
 check('(a) ATV is MAIN from its own data', caseA.ranked[0].vehicle === 'ATV');
-// With NO races at all, the honest answer is uniform — no invented %.
+// With NO races at all, the v22 answer follows the speed table for the
+// pinned track (ATV is fastest on Desert, 72) — no longer uniform 1/3.
 var caseA0 = app.computePrediction({
   vehicles: ['ATV', 'Car', 'Monster Truck'],
   seg1Hint: unknown(),
@@ -68,7 +69,8 @@ var caseA0 = app.computePrediction({
   races: [],
   odds: { 'ATV': 4.1, 'Car': 3.7, 'Monster Truck': 3.0 }
 });
-check('(a0) empty history -> uniform 1/3', caseA0.ranked.every(function (r) { return approx(r.prob, 1 / 3, 1e-9); }));
+check('(a0) empty history -> ATV first (fastest on Desert, 72), not uniform', caseA0.ranked[0].vehicle === 'ATV' && !approx(caseA0.ranked[0].prob, 1 / 3, 0.001));
+check('(a0) empty history -> probs sum to 1', approx(sumProbs(caseA0), 1, 1e-6));
 
 // --- (b) all segments unknown: everything stays near 1/3 ---
 var caseB = app.computePrediction({
@@ -168,7 +170,7 @@ console.log('  (d) Car-favoured odds: ' + dCarFavoured.ranked.map(function (r) {
 check('(d) probs sum to 1 (equal odds)', approx(sumProbs(dEqual), 1, 1e-6));
 check('(d) probs sum to 1 (Car-favoured odds)', approx(sumProbs(dCarFavoured), 1, 1e-6));
 check('(d) favouring Car odds does NOT change any %', JSON.stringify(dCarFavoured.ranked) === JSON.stringify(dEqual.ranked));
-check('(d) ATV stays first (input order, no history)', dCarFavoured.ranked[0].vehicle === 'ATV');
+check('(d) ATV stays first (fastest on Desert, 72 — not input order)', dCarFavoured.ranked[0].vehicle === 'ATV');
 check('(d) probs still respect the 99% display cap', Math.round(maxProb(dCarFavoured) * 100) <= 99);
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

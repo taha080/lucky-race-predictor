@@ -182,12 +182,13 @@ Object.keys(fastMoto['SUV']).forEach(function (t) { fastMoto['SUV'][t] = 1; });
 var rFast = predict(VEH, 1, 'Dirt', histL1, null, fastMoto);
 check('(j) making Motorcycle 999x faster changes nothing', JSON.stringify(rFast.ranked) === JSON.stringify(rNoOdds.ranked));
 
-// --- (k) no races: honest uniform, level 4, never 0/100 ---
+// --- (k) no races: level 4, speeds decide (lrp-v22: with no history the
+// blend ranks from the speed table — no longer uniform 1/3) ---
 var rEmpty = predict(VEH, 1, 'Dirt', []);
 check('(k) no races -> level 4', rEmpty.dataInfo.level === 4);
-check('(k) no races -> uniform 1/3 each', rEmpty.ranked.every(function (r) { return approx(r.prob, 1 / 3, 1e-9); }));
+check('(k) no races -> NOT uniform: SUV first (fastest on Dirt, 134)', rEmpty.ranked[0].vehicle === 'SUV' && !approx(probOf(rEmpty, 'SUV'), 1 / 3, 0.001));
 check('(k) no races -> probs sum to 1', approx(sumProbs(rEmpty), 1, 1e-9));
-check('(k) no races -> input order is the tie-break', rEmpty.ranked[0].vehicle === 'SUV');
+check('(k) no races -> SUV first is the speed table, not input order', rEmpty.ranked[0].vehicle === 'SUV');
 
 // --- (l) buildDataReason texts ---
 check('(l) reason for an L1 winner names wins + n', app.buildDataReason('SUV', rL1.dataInfo) === 'Won 4 of 5 same cars + Seg 2 Dirt races');

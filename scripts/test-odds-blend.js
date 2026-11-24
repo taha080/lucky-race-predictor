@@ -1,9 +1,9 @@
-// Tests that the GAME ODDS are IGNORED for ranking (lrp-v19).
-// The Predictor ranks purely from the saved races — no speeds, no
-// segment lengths, no odds, nothing invented. The game's odds are
-// still shown on the vehicle cards and quoted in the JACKPOT reason,
-// but they must NEVER move the % or flip the order. (Before lrp-v19
-// the odds were blended in at 10% — that blend is gone.)
+// Tests that the GAME ODDS are IGNORED for ranking (lrp-v19, kept in lrp-v22).
+// The Predictor ranks from the speeds + history blend — no odds, nothing
+// invented. The game's odds are still shown on the vehicle cards and
+// quoted in the JACKPOT reason, but they must NEVER move the % or flip
+// the order. (Before lrp-v19 the odds were blended in at 10% — that
+// blend is gone.)
 // Run from the repo root:
 //   node scripts/test-odds-blend.js
 // Exit code 0 = all pass, 1 = any failure.
@@ -42,11 +42,13 @@ function baseInput(races, odds) {
   };
 }
 
-// --- baseline: no odds, no races -> honest uniform, no oddsInfo ---
+// --- baseline: no odds, no races -> speeds decide (lrp-v22: the blend
+// ranks from the Desert speed table with no history — ORV is fastest
+// on Desert, 70) ---
 var base = app.computePrediction(baseInput());
 check('baseline: probs sum to 1', approx(sumProbs(base), 1, 1e-6));
-check('baseline: uniform 1/3 with no data', base.ranked.every(function (r) { return approx(r.prob, 1 / 3, 1e-9); }));
-check('baseline: first by input order (no invented HIGH)', base.ranked[0].vehicle === 'ORV');
+check('baseline: NOT uniform — ORV first (fastest on Desert, 70)', base.ranked[0].vehicle === 'ORV' && !approx(probOf(base, 'ORV'), 1 / 3, 0.001));
+check('baseline: ORV first is the speed table, not input order', base.ranked[0].vehicle === 'ORV');
 check('baseline: no oddsInfo without odds', base.oddsInfo === null);
 check('baseline: no histInfo (no blend)', base.histInfo === null);
 
