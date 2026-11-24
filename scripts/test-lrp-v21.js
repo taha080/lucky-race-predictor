@@ -23,7 +23,7 @@
 //   (d) RETURNING to the Predict tab (or to a visible tab, or back
 //       online) re-fetches the live row at once — wiring, verified by
 //       hand in the browser; the pure decision helpers are tested here.
-//   (e) VERSION BADGE: APP_VERSION ('v22') is shown in the header, so
+//   (e) VERSION BADGE: APP_VERSION ('v23') is shown in the header, so
 //       a cached old deploy is visible at a glance; the freshness line
 //       now also has a green 'fresh' state when the last bet is <= 60 s
 //       old.
@@ -73,7 +73,7 @@ function freshRow(over) {
 
 (async function main() {
   // --- (e) version + poll constants ---
-  check('APP_VERSION is v22', app.APP_VERSION === 'v22');
+  check('APP_VERSION is v23', app.APP_VERSION === 'v23');
   check('poll interval is 4s', app.LIVE_POLL_MS === 4000);
   check('resubscribe zombie window is 15s', app.LIVE_RESUBSCRIBE_ZOMBIE_MS === 15000);
   check('v21 live helpers exported',
