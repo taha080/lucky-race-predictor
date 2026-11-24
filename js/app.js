@@ -63,6 +63,8 @@
      confidence guard is applied again in computePrediction (it was
      dropped from the ranking path in v19). Pure helpers are unit-tested
      in scripts/test-lrp-v22.js.
+     Deploy note (24 Nov): Pages run #84 failed on a GitHub-side artifact
+     error — this line re-triggers a fresh deploy; no ranking change.
    ========================================================================== */
 
 'use strict';
