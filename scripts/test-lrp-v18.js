@@ -107,8 +107,8 @@ check('labels: suggestion line puts ranked[0] after HIGH and ranked[2] after JAC
     { vehicle: 'Gamma', prob: 0.2 }
   ]) === 'Suggested bet: HIGH — Alpha · MID — Beta · JACKPOT — Gamma');
 // Live-condition single pin, same setup as the handleLiveBet test below.
-// With NO saved races the honest answer is uniform — speeds must NOT
-// invent a HIGH on their own.
+// With NO saved races the v22 answer follows the speed table for the
+// pinned track (SUV is fastest on Dirt, 134) — no longer uniform 1/3.
 var onePin = app.computePrediction({
   vehicles: ['ORV', 'SUV', 'Monster Truck'],
   seg1Hint: { mode: 'unknown', track: null, chance: 50 },
@@ -116,10 +116,10 @@ var onePin = app.computePrediction({
   seg3Hint: { mode: 'unknown', track: null, chance: 50 },
   speeds: app.DEFAULT_SPEEDS, races: []
 });
-check('rank: one pin (seg2 Dirt) with NO saved races -> uniform 1/3, no invented HIGH',
-  onePin.ranked.every(function (r) { return Math.abs(r.prob - 1 / 3) < 1e-9; }));
-check('rank: speeds alone do NOT make SUV HIGH (SUV is 2nd by input order)',
-  onePin.ranked[0].vehicle === 'ORV' && onePin.ranked[1].vehicle === 'SUV');
+check('rank: one pin (seg2 Dirt) with NO saved races -> speeds decide (lrp-v22): SUV HIGH, not uniform',
+  onePin.ranked[0].vehicle === 'SUV' && Math.abs(onePin.ranked[0].prob - 1 / 3) > 0.001);
+check('rank: speeds alone DO make SUV HIGH on Dirt (SUV 134 > ORV 92 > Monster Truck 66)',
+  onePin.ranked[0].vehicle === 'SUV' && onePin.ranked[1].vehicle === 'ORV' && onePin.ranked[2].vehicle === 'Monster Truck');
 
 /* ---- (c) handleLiveBet return contract (needs a minimal DOM) --------- */
 // The app module was required without a document (as the other test
@@ -174,9 +174,9 @@ var r1 = app.handleLiveBet(freshRow());
 check('live: fresh valid row auto-runs and returns "ran"', r1 === 'ran');
 check('live: after "ran" the wizard is on step 3 with a run',
   app.wizard.step === 3 && app.wizard.ran === true && !!app.wizard.lastRun);
-check('live: after "ran" the run is the row\'s vehicles + pin (data-only: no history -> uniform, input order first)',
+check('live: after "ran" the run is the row\'s vehicles + pin (v22: no history -> speeds decide, SUV fastest on Dirt)',
   app.wizard.lastRun.vehicles.join('|') === 'ORV|SUV|Monster Truck' &&
-  app.wizard.lastRun.result.ranked[0].vehicle === 'ORV' &&
+  app.wizard.lastRun.result.ranked[0].vehicle === 'SUV' &&
   app.wizard.lastRun.result.dataInfo && app.wizard.lastRun.result.dataInfo.level === 4);
 check('live: after "ran" the run\'s probs sum to 1',
   Math.abs(app.wizard.lastRun.result.ranked.reduce(function (s, r) { return s + r.prob; }, 0) - 1) < 1e-9);

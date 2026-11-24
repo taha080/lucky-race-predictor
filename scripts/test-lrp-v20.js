@@ -211,14 +211,18 @@ seedRows = deduped;
     check('Desert seg ' + (seg + 1) + ': rank 1 is HIGH, rank 2 MID, rank 3 JACKPOT',
       app.rankName(1) === 'HIGH' && app.rankName(2) === 'MID' && app.rankName(3) === 'JACKPOT');
   });
-  // The concrete reproduction result on the local seeds (23 Nov 2026):
-  // SUV HIGH 48.4%, Stock Car MID 33.4%, Motorcycle JACKPOT 18.2% —
-  // level 3 (same cars, 8 races: SUV 3 wins, Stock Car 2, Motorcycle 1).
-  // The Desert pin has <2 matches for this line-up, so it cannot move
-  // the ranking. If the seed files change, update this expectation.
+  // The concrete reproduction result on the local seeds (24 Nov 2026,
+  // lrp-v22): Stock Car HIGH 35.4%, SUV MID 33.3%, Motorcycle JACKPOT
+  // 31.3% — level 3 (same cars, 8 races: SUV 3 wins, Stock Car 2,
+  // Motorcycle 1). Under v19 this was SUV HIGH 48.4% / Stock Car MID
+  // 33.4% / Motorcycle JACKPOT 18.2% — the exact case the user
+  // reported. The blend at speed weight 0.6 flips it: Stock Car is
+  // fastest on Desert per the speed table. The Desert pin has <2
+  // matches for this line-up, so it cannot move the ranking. If the
+  // seed files change, update this expectation.
   var rep = manualRun(0);
-  check('reproduction: SUV HIGH, Stock Car MID, Motorcycle JACKPOT on local seeds',
-    rep.ranked[0].vehicle === 'SUV' && rep.ranked[1].vehicle === 'Stock Car' && rep.ranked[2].vehicle === 'Motorcycle' &&
+  check('reproduction: Stock Car HIGH, SUV MID, Motorcycle JACKPOT on local seeds (v22 flips the v19 SUV HIGH)',
+    rep.ranked[0].vehicle === 'Stock Car' && rep.ranked[1].vehicle === 'SUV' && rep.ranked[2].vehicle === 'Motorcycle' &&
     rep.dataInfo.level === 3 && rep.dataInfo.matches === 8);
 
   finish();
