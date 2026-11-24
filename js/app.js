@@ -72,7 +72,7 @@
 /* Running version, shown on screen (header badge) so the user can see
    at a glance which deploy he is on — a cached old version is visible
    instead of silent. Bump on every deploy. */
-var APP_VERSION = 'v22';
+var APP_VERSION = 'v23';
 
 /* ---------------- Static game data (from the game screenshots) ------------ */
 
@@ -1258,11 +1258,16 @@ function glyphHtml(v) {
      - DEDUP: a row with the same vehicles + shown track as the last
        auto-run bet is a refresh of the same screen — UNLESS it is the
        NEXT race with the identical line-up. isNewLiveBet tells them
-       apart: updated_at at least LIVE_NEW_BET_GAP_MS (40 s) newer
-       than the last processed row (one screen lives at most 35 s),
-       or the timer jumped back up near 35 after counting down
-       (timer reset = new screen). Without this, two consecutive
-       identical bets would lose the second prediction.
+       apart: live_bets holds ONE row per user, upserted only when the
+       Reader SENDs a new bet screen or UPDATEs on a real change, so
+       ANY strictly-newer updated_at is a new bet (v23 — the old 40 s
+       gap rule assumed a new screen could only appear a minute after
+       the last one; in the real game new screens arrive ~9 s apart
+       with identical line-ups and a NULL timer, so the gap rule
+       dropped every bet after the first 1–2). The same updated_at =
+       the same row re-delivered (Realtime + 4 s poll + START fetch)
+       — still a duplicate. Without this, two consecutive identical
+       bets would lose the second prediction.
      - The shown countdown is age-adjusted: timer_seconds minus the time
        since updated_at (liveRemainingSeconds). A bet arriving with under
        10 s left is still predicted but marked LATE on the result.
@@ -1323,21 +1328,15 @@ function liveRowUpdatedAtMs(row) {
   return isNaN(ts) ? null : ts;
 }
 
-/* Gap that proves a row is a NEW bet screen, not a refresh of the one
-   already processed: 40 s. One bet screen lives at most 35 s (the
-   betting timer) — two updates of the SAME screen can never be more
-   than 35 s apart in updated_at — so 40 s is the 35 s screen lifetime
-   plus 5 s of delivery slack. A new bet only appears after the race
-   itself has run, so its first update is normally a full minute or
-   more after the previous bet's last update. Pure — unit-tested. */
-var LIVE_NEW_BET_GAP_MS = 40000;
 /* Timer-reset detection: a fresh bet screen reads near 35 s again.
    LIVE_TIMER_RESET_MIN is the lowest timer a fresh screen is still
    read at (the Reader reads the screen as soon as it appears, so it
    is normally 33–35); LIVE_TIMER_RESET_JUMP is the smallest jump up
    that counts — on one screen the timer only ever counts DOWN, so a
    jump of 5 s or more cannot be the same screen (a 1–2 s wobble from
-   a re-read is not a reset). Both must hold. Pure — unit-tested. */
+   a re-read is not a reset). Both must hold. Pure — unit-tested.
+   v23: the timer reset is now only a FALLBACK for rows with no usable
+   timestamp — newness normally comes from updated_at (see below). */
 var LIVE_TIMER_RESET_MIN = 30;
 var LIVE_TIMER_RESET_JUMP = 5;
 
@@ -1348,13 +1347,25 @@ var LIVE_TIMER_RESET_JUMP = 5;
    been auto-run yet. Returns true when:
      (a) the vehicles/tracks differ from the last bet, or there is no
          last bet at all (a genuinely new line-up is always new);
-     (b) the same line-up, but updated_at is at least
-         LIVE_NEW_BET_GAP_MS newer than the last processed row — two
-         updates of one bet screen can never be that far apart;
+     (b) v23: the same line-up, but updated_at is STRICTLY NEWER than
+         the last processed row. live_bets holds ONE row per user and
+         the Reader upserts it only on SEND (new bet screen) or UPDATE
+         (timer fell >= 5 s, timer appeared, odds changed) — so a
+         bumped updated_at always means the Reader saw something new.
+         The old rule needed a 40 s gap: it assumed a new screen could
+         only appear a minute after the last one, but the real game
+         deals new screens ~9 s apart with identical line-ups and a
+         NULL timer, so the gap rule dropped every bet after the first
+         1–2 — exactly the "never more than 2 live batches" the user
+         reported (24 Nov). A re-delivery of the SAME row (the same
+         updated_at, via Realtime + 4 s poll + START fetch) is still
+         a duplicate. Note a same-screen UPDATE (timer fell >= 5 s)
+         also re-runs under this rule — the prediction is identical,
+         only the countdown refreshes, which is the correct trade
+         against silently dropping real bets.
      (c) the same line-up, but the timer jumped back up near 35 after
-         having counted down — a fresh bet screen appeared.
-   A same-bet refresh — small updated_at gap, monotonically decreasing
-   timer, same vehicles/tracks — fails all three and returns false.
+         having counted down — a fresh bet screen appeared (fallback
+         when either side carries no usable timestamp).
    With a bare string lastBet there is no timing to compare, so only
    (a) applies and a matching key is the same bet (legacy behaviour).
    Pure — unit-tested. */
@@ -1364,9 +1375,17 @@ function isNewLiveBet(row, lastBet) {
   if (typeof lastBet === 'string') return !lastBet || key !== lastBet;
   if (!lastBet.key || key !== lastBet.key) return true;
   var ts = liveRowUpdatedAtMs(row);
-  if (ts !== null && typeof lastBet.updatedAtMs === 'number' && !isNaN(lastBet.updatedAtMs)) {
-    if (ts - lastBet.updatedAtMs >= LIVE_NEW_BET_GAP_MS) return true;
+  if (ts !== null) {
+    if (typeof lastBet.updatedAtMs === 'number' && !isNaN(lastBet.updatedAtMs)) {
+      /* v23: any strictly-newer updated_at is a new bet (see (b) above);
+         the same timestamp is the same row re-delivered — duplicate. */
+      return ts > lastBet.updatedAtMs;
+    }
+    /* The last processed row carried no timestamp but this one does:
+       it cannot be the same row re-delivered, so it is new. */
+    return true;
   }
+  /* Neither side has a usable timestamp: fall back to the timer reset. */
   var cur = row ? row.timer_seconds : null;
   var prev = lastBet.timerSeconds;
   if (typeof cur === 'number' && isFinite(cur) &&
@@ -1516,7 +1535,7 @@ function currentBetKey() {
    it as 'manual-busy'; that guard is deleted, not bypassed.)
    DEDUP: a row whose vehicles + shown track match the last auto-run
    bet is a duplicate — UNLESS isNewLiveBet says it is the NEXT race
-   with the identical line-up (updated_at gap >= LIVE_NEW_BET_GAP_MS,
+   with the identical line-up (v23: any strictly-newer updated_at,
    or the timer reset near 35). The same override applies when the
    matching run on screen IS that last auto-run bet; a MANUAL run of
    the same line-up stays ignored ('already-shown'), because the user
@@ -1533,10 +1552,11 @@ function decideLiveBet(row, accessOk, nowMs, lastBet) {
   if (lastIsSame) {
     /* Same line-up as the last auto-run bet: a refresh of the same bet
        screen, or the NEXT race with the identical line-up.
-       isNewLiveBet tells them apart (updated_at gap / timer reset)
-       when the caller passed the full last-bet record; with a bare
-       string key there is nothing to compare, so it stays a duplicate
-       (legacy behaviour — see scripts/test-lrp-v16.js). */
+       isNewLiveBet tells them apart (v23: any strictly-newer
+       updated_at / timer reset) when the caller passed the full
+       last-bet record; with a bare string key there is nothing to
+       compare, so it stays a duplicate (legacy behaviour — see
+       scripts/test-lrp-v16.js). */
     if (typeof lastBet === 'object' && lastBet && isNewLiveBet(row, lastBet)) {
       /* New race, identical line-up — fall through to run below. */
     } else {
@@ -1746,8 +1766,8 @@ function handleLiveBetInner(row) {
   }
   /* Remember WHEN this bet was processed and what the timer read:
      decideLiveBet needs both to tell the NEXT race with the identical
-     line-up apart from a refresh of this same bet screen
-     (isNewLiveBet — updated_at gap / timer reset). */
+     line-up apart from a re-delivery of this same row
+     (isNewLiveBet — v23: any strictly-newer updated_at). */
   liveLastBet = {
     key: decision.key,
     updatedAtMs: liveRowUpdatedAtMs(row),
@@ -4116,7 +4136,6 @@ if (typeof module !== 'undefined' && module.exports) {
     liveBetKey: liveBetKey,
     liveRowUpdatedAtMs: liveRowUpdatedAtMs,
     isNewLiveBet: isNewLiveBet,
-    LIVE_NEW_BET_GAP_MS: LIVE_NEW_BET_GAP_MS,
     LIVE_TIMER_RESET_MIN: LIVE_TIMER_RESET_MIN,
     LIVE_TIMER_RESET_JUMP: LIVE_TIMER_RESET_JUMP,
     liveBetSegments: liveBetSegments,
