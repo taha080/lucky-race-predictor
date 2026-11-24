@@ -149,19 +149,26 @@ function resetPred() {
   // shown track share one liveBetKey, so the 2nd was ignored as a
   // 'duplicate' and the user missed a prediction (~1 in 500 bets).
   // The fix (isNewLiveBet): the same line-up is a NEW bet when
-  //   (b) updated_at is >= LIVE_NEW_BET_GAP_MS (40 s) newer than the
-  //       last processed row — one bet screen lives at most 35 s, so
-  //       two updates of the SAME screen can never be that far apart;
+  //   (b) v23: updated_at is STRICTLY NEWER than the last processed
+  //       row — live_bets holds one row per user, upserted only on a
+  //       real Reader event, so any bump is a new bet. The old 40 s
+  //       gap rule (v17) assumed new screens arrive a minute apart;
+  //       in the real game they arrive ~9 s apart with identical
+  //       line-ups and a NULL timer, so the gap rule dropped every
+  //       bet after the first 1–2 — "never more than 2 live batches"
+  //       (24 Nov). A same updated_at is still the same row
+  //       re-delivered — a duplicate. A same-screen UPDATE (timer
+  //       fell >= 5 s) also re-runs under v23: the prediction is
+  //       identical, only the countdown refreshes.
   //   (c) the timer jumped back up near 35 after counting down
-  //       (timer reset = a fresh bet screen appeared).
-  // A same-bet refresh (small gap, decreasing timer) must still NOT
-  // re-run. decideLiveBet takes the full last-bet record as an object
+  //       (timer reset = a fresh bet screen appeared) — now only a
+  //       fallback when either side has no usable timestamp.
+  // decideLiveBet takes the full last-bet record as an object
   // { key, updatedAtMs, timerSeconds } (handleLiveBet's liveLastBet);
   // a bare string key keeps the legacy key-only behaviour (v16).
   check('new dedup helpers exported',
     typeof app.isNewLiveBet === 'function' &&
     typeof app.liveRowUpdatedAtMs === 'function' &&
-    app.LIVE_NEW_BET_GAP_MS === 40000 &&
     app.LIVE_TIMER_RESET_MIN === 30 &&
     app.LIVE_TIMER_RESET_JUMP === 5);
   function lastBetFrom(row) {
@@ -201,36 +208,39 @@ function resetPred() {
   });
   check('consecutive identical bet runs on timer reset (30s gap, 20s -> 34s)',
     app.decideLiveBet(bet2reset, true, NOW + 28000, lastBetFrom(bet1mid)).action === 'run');
-  // Same-bet refresh: 8s later, timer 33 -> 25, same line-up: duplicate.
+  // Same-screen update (8s later, timer 33 -> 25): v23 re-runs it —
+  // the prediction is identical, only the countdown refreshes. The
+  // old v17 rule called this a duplicate; that is what dropped real
+  // bets in production, so the rule changed (see (b) above).
   resetPred();
   showRun(bet1);
   var refresh = freshRow({
     timer_seconds: 25,
     updated_at: new Date(NOW + 3000).toISOString()
   });
-  check('same-bet refresh (8s gap, timer 33 -> 25) is a duplicate',
+  check('same-screen update (8s gap, timer 33 -> 25) re-runs under v23',
     (function () {
       var d = app.decideLiveBet(refresh, true, NOW + 5000, lastBetFrom(bet1));
-      return d.action === 'ignore' && d.reason === 'duplicate';
+      return d.action === 'run';
     })());
-  // Same-bet refresh with a 1s timer wobble (33 -> 32): still a duplicate.
+  // Same-screen update with a 1s timer wobble (33 -> 32): re-runs under v23.
   resetPred();
   showRun(bet1);
   var wobble = freshRow({
     timer_seconds: 32,
     updated_at: new Date(NOW + 3000).toISOString()
   });
-  check('same-bet refresh with 1s timer wobble (33 -> 32) is a duplicate',
-    app.decideLiveBet(wobble, true, NOW + 5000, lastBetFrom(bet1)).reason === 'duplicate');
-  // Gap boundary: 39s gap, timer still counting down (33 -> 28): duplicate.
+  check('same-screen update with 1s timer wobble (33 -> 32) re-runs under v23',
+    app.decideLiveBet(wobble, true, NOW + 5000, lastBetFrom(bet1)).action === 'run');
+  // 39s gap without a timer reset: runs under v23 (any newer updated_at is new).
   resetPred();
   showRun(bet1);
   var gap39 = freshRow({
     timer_seconds: 28,
     updated_at: new Date(NOW + 34000).toISOString()
   });
-  check('39s gap without a timer reset is still a duplicate',
-    app.decideLiveBet(gap39, true, NOW + 36000, lastBetFrom(bet1)).reason === 'duplicate');
+  check('39s gap without a timer reset runs under v23',
+    app.decideLiveBet(gap39, true, NOW + 36000, lastBetFrom(bet1)).action === 'run');
   // Gap boundary: exactly 40s gap runs (timer 33 -> 27, no reset needed).
   resetPred();
   showRun(bet1);
@@ -255,8 +265,8 @@ function resetPred() {
     timer_seconds: 24,
     updated_at: new Date(NOW + 25000).toISOString()
   });
-  check('timer jump of only 4s (20s -> 24s) is a duplicate',
-    app.decideLiveBet(noReset, true, NOW + 28000, lastBetFrom(bet1mid)).reason === 'duplicate');
+  check('timer jump of only 4s (20s -> 24s) runs under v23 (newer updated_at)',
+    app.decideLiveBet(noReset, true, NOW + 28000, lastBetFrom(bet1mid)).action === 'run');
   // A genuinely different bet still runs with an object lastBet.
   resetPred();
   check('different bet runs with an object lastBet',
@@ -286,8 +296,8 @@ function resetPred() {
     app.isNewLiveBet(freshRow(), null) === true);
   check('isNewLiveBet: different key -> new',
     app.isNewLiveBet(freshRow({ tracks: ['unknown', 'Desert', 'unknown'] }), lastBetFrom(bet1)) === true);
-  check('isNewLiveBet: same key, small gap, decreasing timer -> same bet',
-    app.isNewLiveBet(refresh, lastBetFrom(bet1)) === false);
+  check('isNewLiveBet: same key, small gap, decreasing timer -> NEW under v23 (any newer updated_at)',
+    app.isNewLiveBet(refresh, lastBetFrom(bet1)) === true);
   check('liveRowUpdatedAtMs parses updated_at',
     app.liveRowUpdatedAtMs(bet1) === NOW - 5000);
   check('liveRowUpdatedAtMs null for a row with no timestamp',
