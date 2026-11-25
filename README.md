@@ -132,9 +132,10 @@ speed table live in `localStorage` and predictions work with no account.
    might mean only a 10–20% chance of Dirt, not a guaranteed Dirt segment.
    Patterns change every round — the app never assumes a fixed daily
    pattern, and it relearns from every newly saved race.
-4. **Speeds + full-history blend (lrp-v22, 24 Nov 2026).** The ranking
-   blends the game's own speed table with the full saved history —
-   first bet to last — as `P_final = 0.6 × P_speed + 0.4 × P_hist`.
+4. **Speeds + full-history blend (lrp-v22, 24 Nov 2026; weight raised
+   in lrp-v24, 25 Nov 2026).** The ranking blends the game's own
+   speed table with the full saved history — first bet to last — as
+   `P_final = 0.8 × P_speed + 0.2 × P_hist` (0.6/0.4 in v22/v23).
    - **Speed share** (`P_speed`): the canonical `DEFAULT_SPEEDS` table
      (the game's own speeds per track), never a phone's localStorage
      edits. With a track pinned, each vehicle's share is its speed on
@@ -145,9 +146,17 @@ speed table live in `localStorage` and predictions work with no account.
      track, then same vehicles, then overall win rates (min 2 matches,
      Laplace alpha 2) — with recency decay ON (newest race weight 1.0,
      halving every `HISTORY_HALF_LIFE_RACES` races, default 50).
-   The 0.6 speed weight is the lowest weight that keeps Stock Car first
-   on Desert (fastest there per the speed table) on the current data;
-   replay on 346 local races gives HIGH 49.2% (data-only v19: 39.2%).
+   The 0.6 speed weight was the lowest weight that kept Stock Car
+   first on Desert (fastest there per the speed table) on the data at
+   the time; replay on 346 local races gave HIGH 49.2% (data-only v19:
+   39.2%). In lrp-v24 the weight rose to 0.8: a walk-forward replay
+   (every race predicted only from earlier races — no leakage) judged
+   on the newest 100 races put 0.8 ahead of 0.6 on both slices (all:
+   HIGH 48.2% → 52.1%, top-2 78.9% → 80.0%; newest 100: HIGH 48.5% →
+   54.5%, top-2 82.8% → 85.9%). ELO ratings per vehicle per track
+   (dynamic K) and head-to-head shares were tested in the same replay
+   and did not beat the blend, so they were not shipped — see
+   `scripts/replay-elo-v24.js` and `scripts/replay-elo-v24b.js`.
    The confidence guard is applied after the blend: with any track
    unknown it shrinks each % toward 1/3, so an unknown track can never
    show over 90% (or under 5%).
