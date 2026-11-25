@@ -81,8 +81,11 @@ var dirtRes = app.computePrediction({
 });
 check('rank: pin seg2 Dirt, SUV won 4/5 in the data -> HIGH',
   dirtRes.ranked[0].vehicle === 'SUV');
-check('rank: pin seg2 Dirt, Monster Truck won 1/5 -> MID (ORV, 0 wins, is JACKPOT)',
-  dirtRes.ranked[1].vehicle === 'Monster Truck' && dirtRes.ranked[2].vehicle === 'ORV');
+// lrp-v24 note: at speed weight 0.8 (was 0.6) ORV's Dirt speed edge
+// (92 vs Monster Truck 66) now outweighs MT's single win in 5, so ORV
+// takes MID and MT drops to JACKPOT — the replay-backed v24 behavior.
+check('rank: pin seg2 Dirt, ORV (faster on Dirt) -> MID at weight 0.8 (Monster Truck, 1 win, is JACKPOT)',
+  dirtRes.ranked[1].vehicle === 'ORV' && dirtRes.ranked[2].vehicle === 'Monster Truck');
 check('rank: data level is L1 with n=5',
   dirtRes.dataInfo.level === 1 && dirtRes.dataInfo.matches === 5);
 var desertPin = pinSeg2('Desert');

@@ -73,7 +73,7 @@ function freshRow(over) {
 
 (async function main() {
   // --- (e) version + poll constants ---
-  check('APP_VERSION is v23', app.APP_VERSION === 'v23');
+  check('APP_VERSION is v24', app.APP_VERSION === 'v24');
   check('poll interval is 4s', app.LIVE_POLL_MS === 4000);
   check('resubscribe zombie window is 15s', app.LIVE_RESUBSCRIBE_ZOMBIE_MS === 15000);
   check('v21 live helpers exported',

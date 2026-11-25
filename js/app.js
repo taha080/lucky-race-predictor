@@ -58,9 +58,21 @@
      localStorage edits) for the shown track with the full saved history,
      first bet to last, via the v19 hierarchical back-off, now with the
      recency decay (halves every 50 races) weighting the history counts.
-     Speed weight V22_SPEED_WEIGHT (default 0.6), chosen by replay on
-     the 346 local races — see scripts/replay-blend-v22.js. The
-     confidence guard is applied again in computePrediction (it was
+     Speed weight V22_SPEED_WEIGHT (default 0.8 since lrp-v24; 0.6 in
+     v22/v23), chosen by walk-forward replay on the 346 local races —
+     see scripts/replay-blend-v22.js and scripts/replay-elo-v24b.js.
+     lrp-v24 (25 Nov 2026, the user's order to apply the Green Code
+     sports-prediction method): leakage audit passed (every replay
+     already predicts each race only from earlier races); ELO ratings
+     per vehicle per track (dynamic K) and head-to-head shares were
+     tested walk-forward and did NOT beat the current blend, so they
+     were not shipped; the weight sweep judged on the newest 100
+     races showed 0.8 beats 0.6 on both slices (all: HIGH 48.2% ->
+     52.1%, top-2 78.9% -> 80.0%; newest 100: HIGH 48.5% -> 54.5%,
+     top-2 82.8% -> 85.9%), so the speed weight rose to 0.8. History
+     still counts (20%) per the user's 24 Nov order. Pure helpers are
+     unit-tested in scripts/test-lrp-v24.js.
+     The confidence guard is applied again in computePrediction (it was
      dropped from the ranking path in v19). Pure helpers are unit-tested
      in scripts/test-lrp-v22.js.
      Deploy note (24 Nov): Pages run #84 failed on a GitHub-side artifact
@@ -72,7 +84,7 @@
 /* Running version, shown on screen (header badge) so the user can see
    at a glance which deploy he is on — a cached old version is visible
    instead of silent. Bump on every deploy. */
-var APP_VERSION = 'v23';
+var APP_VERSION = 'v24';
 
 /* ---------------- Static game data (from the game screenshots) ------------ */
 
@@ -712,17 +724,21 @@ function dataOnlyRank(vehicles, knownSeg, knownTrack, raceList, opts) {
    - History share: dataOnlyRank with the recency decay ON (halves
      every 50 races — every race still counts, recent ones count more).
    - Blend: final = V22_SPEED_WEIGHT * speed + (1 - V22_SPEED_WEIGHT)
-     * history. The weight is 0.6 (speed-primary): on the 346 local
-     races the replay at 0.5 let thin history overrule the speed table
-     in the user's own Desert example (Stock Car is fastest on Desert
-     per the table, yet SUV had the only Desert wins) — 0.6 is the
-     lowest weight that puts Stock Car first there, while 0.7 gave up
-     too much of the history signal. See scripts/replay-blend-v22.js.
+     * history. The weight is 0.8 since lrp-v24 (25 Nov 2026): the
+     walk-forward weight sweep judged on the newest 100 races (the
+     time-based test slice) put 0.8 ahead of the old 0.6 on both the
+     full set and the late slice, while ELO and head-to-head variants
+     tested in the same replay did not beat the current blend and
+     were not shipped — see scripts/replay-elo-v24.js and
+     scripts/replay-elo-v24b.js. History still counts at 20% per the
+     user's 24 Nov order (speeds AND full history). The original 0.6
+     (v22) was the lowest weight that put Stock Car first in the
+     user's Desert example; 0.8 keeps that case and improves replay.
    - The blended ranking carries the dataOnlyRank wins and level so
      the UI reason ("Won X of N races") and the feedback counters keep
      working, and the confidence guard is applied in computePrediction
      after the blend (it was dropped from the ranking path in v19). */
-var V22_SPEED_WEIGHT = 0.6;
+var V22_SPEED_WEIGHT = 0.8;
 
 function speedShares(vehicles, knownSeg, knownTrack) {
   var speeds = {};

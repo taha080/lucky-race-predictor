@@ -73,7 +73,7 @@ function lastBetFrom(row) {
   check('v23 live helpers exported (no 40s gap constant any more)',
     typeof app.isNewLiveBet === 'function' &&
     typeof app.decideLiveBet === 'function' &&
-    app.APP_VERSION === 'v23' &&
+    app.APP_VERSION === 'v24' &&
     typeof app.LIVE_NEW_BET_GAP_MS === 'undefined');
 
   // --- (a) REPLAY of the real 24 Nov traffic ---------------------------
